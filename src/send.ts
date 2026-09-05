@@ -59,16 +59,37 @@ export async function sendMessage(destination: Destination, message: Message, op
 }
 
 async function sendCodex(threadId: string, text: string, command: string[], timeoutMs: number): Promise<SendOutcome> {
-  let child: Bun.Subprocess<'ignore', 'ignore', 'ignore'>
+  let child: Bun.Subprocess<'ignore', 'ignore', 'pipe'>
   try {
     child = Bun.spawn([...command, 'queue', '--thread', threadId, '--message', text], {
-      stdin: 'ignore', stdout: 'ignore', stderr: 'ignore', detached: true,
+      stdin: 'ignore', stdout: 'ignore', stderr: 'pipe', detached: true,
     })
   } catch (error) {
     return { status: 'failed', error: `Could not start Codex: ${errorText(error)}` }
   }
 
-  const state = { timedOut: false }
+  const reader = child.stderr.getReader()
+  const stderr = new Uint8Array(4096)
+  const state = { timedOut: false, stderrBytes: 0 }
+  const collected = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) return
+        if (value.length >= stderr.length) {
+          stderr.set(value.subarray(value.length - stderr.length))
+          state.stderrBytes = stderr.length
+        } else {
+          const overflow = Math.max(0, state.stderrBytes + value.length - stderr.length)
+          stderr.copyWithin(0, overflow, state.stderrBytes)
+          stderr.set(value, state.stderrBytes - overflow)
+          state.stderrBytes = Math.min(stderr.length, state.stderrBytes + value.length)
+        }
+      }
+    } catch {
+      // A diagnostic pipe failure does not change the native queue outcome.
+    }
+  })()
   const timeout = setTimeout(() => {
     state.timedOut = true
     // This subprocess owns its process group, including any executable wrapper.
@@ -79,20 +100,33 @@ async function sendCodex(threadId: string, text: string, command: string[], time
       child.kill('SIGKILL')
     }
   }, timeoutMs)
+  let outcome: SendOutcome
   try {
-    // Do not wait on output pipes: a wrapper's descendant can retain them after
-    // the immediate child exits. Native diagnostics also need not cross into mail.
     const exitCode = await child.exited
-    if (state.timedOut) return { status: 'uncertain', error: 'Codex timed out; the message may already be queued. No retry was made.' }
-    if (exitCode !== 0) {
-      return { status: 'uncertain', error: `Codex exited with ${exitCode}; queue acceptance is unconfirmed. Check that the target task exists and the native CLI can access it.` }
+    if (state.timedOut) {
+      outcome = { status: 'uncertain', error: 'Codex timed out; the message may already be queued. No retry was made.' }
+    } else if (exitCode !== 0) {
+      outcome = { status: 'uncertain', error: `Codex exited with ${exitCode}; queue acceptance is unconfirmed. Check that the target task exists and the native CLI can access it.` }
+    } else {
+      outcome = { status: 'submitted', evidence: 'codex-queue' }
     }
-    return { status: 'submitted', evidence: 'codex-queue' }
   } catch (error) {
-    return { status: 'uncertain', error: `Could not confirm Codex queue submission: ${errorText(error)}` }
+    outcome = { status: 'uncertain', error: `Could not confirm Codex queue submission: ${errorText(error)}` }
   } finally {
     clearTimeout(timeout)
+    // A wrapper's descendant can retain stderr after the immediate child exits.
+    // Cancel before awaiting the collector so neither this call nor Bun waits for EOF.
+    try {
+      await reader.cancel()
+    } catch {
+      // An already errored pipe can reject cancellation; retain any captured bytes.
+    }
+    await collected
+    reader.releaseLock()
   }
+  const diagnostic = new TextDecoder().decode(stderr.subarray(0, state.stderrBytes)).trim()
+  if (outcome.status !== 'submitted' && diagnostic !== '') outcome.error += `\nCodex stderr (last 4096 bytes):\n${diagnostic}`
+  return outcome
 }
 
 function sendClaude(destination: Extract<Destination, { provider: 'claude' }>, text: string, from: string, timeoutMs: number): Promise<SendOutcome> {

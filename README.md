@@ -29,6 +29,8 @@ uc join --name reviewer
 
 Joining reads the current conversation's identity from its environment. Running it in an unrelated terminal cannot identify the intended conversation. Native sandbox permissions may require the host's normal, scoped approval to access the registry or messaging endpoint.
 
+Run attachment and sends as individual commands so the native permission check can assess each operation.
+
 ## Send and reply
 
 From either joined conversation:
@@ -72,6 +74,8 @@ Commands return JSON. Send results include the message ID and exact sender and r
 
 The Claude socket does not acknowledge admission. A stale session address or native trust decision can prevent processing even after a successful write. Check the recipient conversation before deciding whether to resend an uncertain message.
 
+Codex errors include the last 4 KiB of native diagnostics when available. The diagnostic helps explain the failure; it does not change an uncertain submission into a confirmed result.
+
 | Variable | Purpose |
 | --- | --- |
 | `UNDERCURRENT_HOME` | Registration directory; defaults to `~/.undercurrent`. Participating conversations must use the same directory. |
@@ -81,6 +85,6 @@ The Claude socket does not acknowledge admission. A stale session address or nat
 
 Mixed Codex and Claude identity variables are rejected rather than choosing a sender. Do not copy another conversation's identity or Claude messaging token into the sender environment.
 
-Current verification uses Bun `1.3.14`, the Codex `0.153.4` wrapper, and Claude Code `2.1.261`. A full live round trip is not yet confirmed, and other versions are unverified. See [VERIFICATION.md](VERIFICATION.md) for the detailed evidence and remaining checks.
+Verified with Bun `1.3.14`, Codex CLI `0.153.4` through the user's wrapper, and Claude Code `2.1.261`: Claude received a real review request plus a message during active work, then submitted its review back to the exact Codex task. Codex model consumption of that queued reply remains pending; other versions and hidden Codex subagents are unverified. See [VERIFICATION.md](VERIFICATION.md) for the evidence and remaining checks.
 
 Run `bun run check` for type checks, lint, and tests; `uc --help` lists the commands.

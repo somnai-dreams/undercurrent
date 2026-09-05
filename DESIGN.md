@@ -4,7 +4,7 @@ Design, 5 September 2026. The first courier is implemented; [README.md](README.m
 
 **Undercurrent connects existing agent conversations through a small local command. It owns an address book and translates sends into the receiving host's native messaging mechanism.**
 
-The first version targets Codex desktop and Claude Code on the same Mac. Codex terminal uses the same proposed adapter but still needs its own smoke test. This is the intended first pairing, based on the current conversation; support for other machines is not part of this MVP.
+The original MVP targets Codex desktop and Claude Code on the same Mac. Codex terminal uses the same proposed adapter but still needs its own smoke test. The optional [remote prototype](REMOTE.md) extends that courier with invitations, contact-specific sharing, and a live relay; the local design below remains its native delivery foundation.
 
 ## Why this design
 

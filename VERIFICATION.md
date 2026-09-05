@@ -4,7 +4,7 @@
 
 ## Automated checks
 
-`bun run check` passes strict TypeScript 7, type-aware lint, and 28 tests (201 assertions). Tests cover exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. The local socket fixture needs the host's normal permission to open a Unix socket.
+`bun run check` passes strict TypeScript 7, type-aware lint, and 44 tests (407 assertions), including the remote prototype checks below. The original 28 local tests cover exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 
 A review found that waiting for a Codex wrapper's output streams could exceed the submission timeout when a descendant kept the streams open. The adapter now waits only for process exit, ignores unused output, and terminates its own process group on timeout. A wrapper-and-descendant regression fixture verifies bounded return and one invocation.
 
@@ -37,6 +37,20 @@ The review also proposed rejecting duplicate labels at join. We retained the ori
 
 Codex requested focused verification of the fix through message `c0feadec-5ae3-4299-b2b2-6896aba92993`. Claude independently passed the updated full check (28 tests), reproduced the original failure and confirmed its native diagnostic now reaches the CLI caller, and checked shell wrappers that exit both successfully and unsuccessfully while a child retains stderr. The whole callers exited promptly. It found no blocking regression and sent verification reply `191fd4ca-164b-40d5-a554-a4bbba751333` through the updated courier; native Codex queue submission succeeded. The full verification envelope subsequently arrived as native task input and was consumed by Codex with the expected sender and reply reference. Both courier replies have now been consumed on successive Codex turns. The bounded dogfood is complete, with no resend or acknowledgment loop.
 
+## Remote prototype checks
+
+The optional relay is tested with isolated temporary machine homes on loopback. These checks use the actual HTTP and WebSocket transport, with fixture native recipients. No real relay host, second physical machine, or remote credentials have been configured for the user.
+
+The CLI integration test initializes the first machine, creates and accepts an invitation, verifies that unshared peers stay private, shares one conversation in each direction, and completes a send and correlated reply. Both homes deliberately use the same native conversation UUID. The receiver's label is then changed and its old label assigned to a private conversation: the original exact remote address still reaches only the originally shared conversation. Literal Unicode, punctuation, backticks, shell syntax, and newlines survive the native envelope. Unsharing refuses the next message without a native invocation; revocation blocks both directions. Normal contact and status output omits credentials.
+
+Relay fixtures cover concurrent single-use redemption, credential survival across a relay restart, authenticated routing, receipts from the wrong connection, replacement of an existing receiver, offline failure, uncertain timeout without resend, and a bound on concurrent pending deliveries. Client fixtures exercise fresh local socket lookup and grants, private discovery, malformed network responses, revocation, a bounded WebSocket handshake, and a real relay restart without replaying the interrupted native handoff. A separate WebSocket redirect fixture confirms that this Bun version rejects a cross-origin upgrade redirect without sending the owner credential to the second server.
+
+Bun 1.3.14 has a shutdown bookkeeping issue reproduced without Undercurrent imports: after replacing and closing a WebSocket, `server.stop(true)` can return a promise that never resolves even though the sockets are closed, new connections are refused, and the standalone process exits naturally. Replacement fixtures invoke force-stop without awaiting that promise. The relay itself has no workaround state or retry for this runtime issue. A replaced Undercurrent bridge stops instead of reconnecting and competing with its replacement.
+
+Read-only review request `fc6d20ff-3aa1-44e7-bc50-ea2058c918de` was submitted through the existing local courier to the connected Claude reviewer. Its response has not yet been consumed by Codex; this is a pending independent review, not completed remote dogfood.
+
 ## Remaining checks
 
 Fixture coverage establishes distinct addresses in one registry, but does not replace two live same-provider conversations. Live stopped/unloaded Codex targets, a resumed Claude session, and host-held or refused inbox messages have not been exercised. These remain compatibility checks, not product guarantees. Other native versions and Codex terminal reception are unverified.
+
+The remote prototype still needs two physical machines through a trusted HTTPS relay, including real sleep, disconnection, reconnect, and revocation observations. HTTPS deployment, native access from a separately launched bridge, and how frequently live-only messaging becomes inconvenient are unverified. Offline storage should be reconsidered only after that experiment.

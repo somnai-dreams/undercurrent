@@ -7,6 +7,10 @@ import { addressOf, formatAddress } from './data.ts'
 import type { Failure, Registration, Result } from './data.ts'
 import { joinPeer, leavePeer, listPeers, resolvePeer } from './registry.ts'
 import { createMessage, sendMessage } from './send.ts'
+import type { SendOutcome } from './send.ts'
+import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
+import { formatRemoteAddress, parseRemoteAddress } from './remote-protocol.ts'
+import { sendRemote } from './remote.ts'
 
 type TextSource =
   | { kind: 'text'; text: string }
@@ -18,6 +22,7 @@ type Command =
   | { kind: 'join'; name: string }
   | { kind: 'peers' }
   | { kind: 'leave' }
+  | { kind: 'remote' | 'relay'; args: string[] }
   | { kind: 'send'; target: string; source: TextSource; inReplyTo: string | null }
 
 const help = `Undercurrent — messages between existing agent conversations.
@@ -29,6 +34,24 @@ Usage:
   uc send <label|address> --file <path> [--in-reply-to <message UUID>]
   cat findings.txt | uc send <label|address> [--stdin]
   uc leave
+
+Remote (optional):
+  uc remote init <HTTPS relay origin>
+  uc remote invite
+  uc remote accept <invitation>
+  uc remote status
+  uc remote contacts
+  uc remote share <contact UUID> [local label|address]
+  uc remote unshare <contact UUID> [local label|address]
+  uc remote peers <contact UUID>
+  uc remote revoke <contact UUID>
+  uc remote bridge
+  uc relay [--state <file>] [--host <host>] [--port <port>]
+
+Remote exact addresses: remote:<contact UUID>/<native exact address>.
+Both machines share participating peers explicitly. The receiver bridge must
+be running. No offline storage or automatic message retries. The trusted relay
+operator can read messages. Public relays require HTTPS; loopback permits HTTP.
 
 Exact addresses: codex:<thread UUID> or claude:<session UUID>.
 Use -- before message text that begins with a dash.
@@ -42,6 +65,7 @@ Messages are limited to 32 KiB. No automatic retries or recipient startup.
 Environment:
   UNDERCURRENT_HOME       Registry directory (default: ~/.undercurrent).
   UNDERCURRENT_CODEX_BIN  Optional Codex executable path, not a shell command.
+  UNDERCURRENT_RELAY_ADMIN  Relay setup secret (64 lowercase hex characters).
   CODEX_THREAD_ID         Current Codex thread identity.
   CLAUDE_CODE_SESSION_ID  Current Claude session identity.
   CLAUDE_CODE_MESSAGING_SOCKET  Current Claude native inbox socket.
@@ -59,6 +83,9 @@ async function main(args: string[]): Promise<number> {
     return fail(invalidInput('UNDERCURRENT_HOME must be a nonempty directory path.'))
   }
   const home = configuredHome === undefined ? join(homedir(), '.undercurrent') : resolve(configuredHome)
+
+  if (command.value.kind === 'remote') return runRemoteCommand(home, command.value.args)
+  if (command.value.kind === 'relay') return runRelayCommand(home, command.value.args)
 
   if (command.value.kind === 'peers') {
     const peers = await listPeers(home)
@@ -95,22 +122,32 @@ async function main(args: string[]): Promise<number> {
           return fail(invalidInput('Claude\'s current inbox socket differs from its registration. Run uc join --name <label> again before sending.'))
         }
       }
-      const recipient = await resolvePeer(home, command.value.target)
-      if (!recipient.ok) return fail(recipient)
       const text = await readText(command.value.source)
       if (!text.ok) return fail(text)
       const message = createMessage(address, text.value, command.value.inReplyTo)
       if (!message.ok) return fail(message)
-      const codexBin = process.env['UNDERCURRENT_CODEX_BIN']
-      if (recipient.value.destination.provider === 'codex' && codexBin !== undefined && codexBin.trim() === '') {
-        return fail(invalidInput('UNDERCURRENT_CODEX_BIN must be a nonempty executable path.'))
+      let outcome: SendOutcome
+      let to: string
+      if (command.value.target.startsWith('remote:')) {
+        const recipient = parseRemoteAddress(command.value.target)
+        if (!recipient.ok) return fail(recipient)
+        to = formatRemoteAddress(recipient.value)
+        outcome = await sendRemote(home, recipient.value, message.value)
+      } else {
+        const recipient = await resolvePeer(home, command.value.target)
+        if (!recipient.ok) return fail(recipient)
+        const codexBin = process.env['UNDERCURRENT_CODEX_BIN']
+        if (recipient.value.destination.provider === 'codex' && codexBin !== undefined && codexBin.trim() === '') {
+          return fail(invalidInput('UNDERCURRENT_CODEX_BIN must be a nonempty executable path.'))
+        }
+        to = formatAddress(addressOf(recipient.value.destination))
+        outcome = await sendMessage(recipient.value.destination, message.value, codexBin === undefined ? {} : { codexCommand: [codexBin] })
       }
-      const outcome = await sendMessage(recipient.value.destination, message.value, codexBin === undefined ? {} : { codexCommand: [codexBin] })
       console.log(JSON.stringify({
         ...outcome,
         messageId: message.value.id,
         from: formatAddress(address),
-        to: formatAddress(addressOf(recipient.value.destination)),
+        to,
       }))
       switch (outcome.status) {
         case 'submitted': return 0
@@ -141,6 +178,10 @@ function parseCommand(args: string[]): Result<Command> {
       return { ok: true, value: { kind: command } }
     case 'send':
       return parseSend(args.slice(1))
+    case 'remote':
+    case 'relay':
+      if (args[1] === '--help') return { ok: true, value: { kind: 'help' } }
+      return { ok: true, value: { kind: command, args: args.slice(1) } }
     default:
       return invalidInput(`Unknown command ${JSON.stringify(command)}. Run uc --help.`)
   }

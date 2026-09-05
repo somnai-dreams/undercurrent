@@ -1,8 +1,8 @@
 # Undercurrent
 
-A small courier between existing Codex desktop and Claude Code conversations on the same Mac. Each conversation registers a name, then sends text through the recipient's native messaging interface.
+A small courier between existing Codex desktop and Claude Code conversations. Each conversation registers a name, then sends text through the recipient's native messaging interface.
 
-Undercurrent stores peer registrations only. It has no message database, private queue, daemon, or agent launcher. Conversation history stays with Codex and Claude.
+Local messaging stores peer registrations and needs no background process. The optional [remote prototype](REMOTE.md) connects trusted machines through invitations, a live relay, and a receiver on each machine. Conversations are shared explicitly per contact. There is no message database, offline queue, or agent launcher; conversation history stays with Codex and Claude.
 
 ## Setup
 
@@ -78,7 +78,7 @@ Codex errors include the last 4 KiB of native diagnostics when available. The di
 
 | Variable | Purpose |
 | --- | --- |
-| `UNDERCURRENT_HOME` | Registration directory; defaults to `~/.undercurrent`. Participating conversations must use the same directory. |
+| `UNDERCURRENT_HOME` | State directory; defaults to `~/.undercurrent`. Participating conversations and the receiver on one machine must use the same directory. |
 | `UNDERCURRENT_CODEX_BIN` | Optional Codex executable path; a single executable, not a shell command. Defaults to `codex` on `PATH`. |
 | `CODEX_THREAD_ID` | Codex-provided current conversation identity. |
 | `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_MESSAGING_SOCKET` | Claude-provided current identity and inbox socket; both are required. |

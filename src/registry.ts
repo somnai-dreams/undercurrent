@@ -1,0 +1,130 @@
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { join } from 'node:path'
+import { addressOf, formatAddress, parseAddress, parseRegistration } from './data.ts'
+import type { Address, Failure, Registration, Result } from './data.ts'
+
+export async function listPeers(home: string): Promise<Result<Registration[]>> {
+  const directory = join(home, 'peers')
+  let entries: Dirent[]
+  try {
+    entries = await readdir(directory, { withFileTypes: true })
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: [] }
+    return ioFailure(`Cannot list peers in ${directory}`, error)
+  }
+
+  const reads: Promise<Result<Registration>>[] = []
+  for (const entry of entries) {
+    if (!entry.name.endsWith('.json')) continue
+    if (!entry.isFile()) {
+      return { ok: false, error: { kind: 'invalid-registration', message: `${join(directory, entry.name)} must be a regular registration file.` } }
+    }
+    reads.push(readRegistration(join(directory, entry.name), entry.name))
+  }
+  const results = await Promise.all(reads)
+  const peers: Registration[] = []
+  for (const result of results) {
+    if (!result.ok) return result
+    peers.push(result.value)
+  }
+  peers.sort((left, right) => left.name.localeCompare(right.name) || formatAddress(addressOf(left.destination)).localeCompare(formatAddress(addressOf(right.destination))))
+  return { ok: true, value: peers }
+}
+
+export async function joinPeer(home: string, registration: Registration): Promise<Result<Registration>> {
+  const parsed = parseRegistration(registration)
+  if (!parsed.ok) return parsed
+  const peer = parsed.value
+  const directory = join(home, 'peers')
+  const filename = registrationFilename(addressOf(peer.destination))
+  const temporary = join(directory, `.tmp-${crypto.randomUUID()}`)
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    await writeFile(temporary, `${JSON.stringify(peer, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+    await rename(temporary, join(directory, filename))
+    return { ok: true, value: peer }
+  } catch (error) {
+    try {
+      await rm(temporary, { force: true })
+    } catch (cleanupError) {
+      return ioFailure(`Cannot register ${formatAddress(addressOf(peer.destination))}; temporary-file cleanup also failed (${errorText(cleanupError)})`, error)
+    }
+    return ioFailure(`Cannot register ${formatAddress(addressOf(peer.destination))}`, error)
+  }
+}
+
+export async function leavePeer(home: string, address: Address): Promise<Result<void>> {
+  const parsed = parseAddress(formatAddress(address))
+  if (!parsed.ok) return parsed
+  try {
+    await rm(join(home, 'peers', registrationFilename(parsed.value)), { force: true })
+    return { ok: true, value: undefined }
+  } catch (error) {
+    return ioFailure(`Cannot detach ${formatAddress(parsed.value)}`, error)
+  }
+}
+
+export async function resolvePeer(home: string, nameOrAddress: string): Promise<Result<Registration>> {
+  if (nameOrAddress.includes(':')) {
+    const parsed = parseAddress(nameOrAddress)
+    if (!parsed.ok) return parsed
+    const filename = registrationFilename(parsed.value)
+    return readRegistration(join(home, 'peers', filename), filename)
+  }
+  const result = await listPeers(home)
+  if (!result.ok) return result
+  const matches = result.value.filter(peer => peer.name === nameOrAddress)
+  const first = matches[0]
+  if (first === undefined) {
+    return { ok: false, error: { kind: 'not-found', message: `No registered peer named ${JSON.stringify(nameOrAddress)}.` } }
+  }
+  if (matches.length > 1) {
+    const addresses = matches.map(peer => formatAddress(addressOf(peer.destination))).join(', ')
+    return { ok: false, error: { kind: 'ambiguous', message: `More than one peer is named ${JSON.stringify(nameOrAddress)}. Use an exact address: ${addresses}.` } }
+  }
+  return { ok: true, value: first }
+}
+
+async function readRegistration(path: string, filename: string): Promise<Result<Registration>> {
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) {
+      return { ok: false, error: { kind: 'not-found', message: `No registration at ${path}. Join the intended conversation first.` } }
+    }
+    return ioFailure(`Cannot read registration ${path}`, error)
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(text) as unknown
+  } catch {
+    return { ok: false, error: { kind: 'invalid-registration', message: `${path} contains invalid JSON.` } }
+  }
+  const parsed = parseRegistration(raw)
+  if (!parsed.ok) {
+    return { ok: false, error: { kind: 'invalid-registration', message: `${path}: ${parsed.error.message}` } }
+  }
+  const expected = registrationFilename(addressOf(parsed.value.destination))
+  if (filename !== expected) {
+    return { ok: false, error: { kind: 'invalid-registration', message: `${path} identifies a different conversation; its filename must be ${expected}.` } }
+  }
+  return parsed
+}
+
+function registrationFilename(address: Address): string {
+  return `${formatAddress(address)}.json`
+}
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+
+function ioFailure(operation: string, error: unknown): Failure {
+  return { ok: false, error: { kind: 'io', message: `${operation}: ${errorText(error)}` } }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

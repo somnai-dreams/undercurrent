@@ -1,0 +1,24 @@
+{
+  "name": "undercurrent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "uc": "src/cli.ts"
+  },
+  "scripts": {
+    "uc": "bun run src/cli.ts",
+    "tsc": "bun ./node_modules/@typescript/native/bin/tsc",
+    "typecheck": "bun run tsc --noEmit",
+    "lint": "bun --bun oxlint --type-aware src tests",
+    "test": "bun test ./tests",
+    "check": "bun run typecheck && bun run lint && bun run test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "oxlint": "latest",
+    "oxlint-tsgolint": "latest",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,6 +1,6 @@
 # Undercurrent
 
-Design proposal, 5 September 2026. Implementation and live delivery tests have not started.
+Design, 5 September 2026. The first courier is implemented; [README.md](README.md) describes its use and [VERIFICATION.md](VERIFICATION.md) records the live evidence and remaining checks.
 
 **Undercurrent connects existing agent conversations through a small local command. It owns an address book and translates sends into the receiving host's native messaging mechanism.**
 
@@ -20,7 +20,7 @@ This applies Vibescript directly: keep one owner for each piece of state; avoid 
 
 The user asks each participating agent to join Undercurrent under a useful label, such as `implementation` or `review`. Joining runs inside the intended conversation and captures its exact native identity. It does not select the first loaded session or infer identity from the working directory.
 
-Proposed command surface:
+Command surface:
 
 ```text
 uc join --name implementation
@@ -30,7 +30,7 @@ uc send codex:<thread-id> --in-reply-to <message-id> --file findings.txt
 uc leave
 ```
 
-`join` and `leave` attach or detach the current conversation. Once attached, the agent normally uses only `peers` and `send`. `--file` or stdin carries longer text without shell-quoting problems. These are proposed commands, not installed functionality.
+`join` and `leave` attach or detach the current conversation. Once attached, the agent normally uses only `peers` and `send`. `--file` or stdin carries longer text without shell-quoting problems.
 
 An incoming message includes its ID, the sender's exact return address, an optional reply reference, and the original text. A reply is another send. There is no separate reply lookup or conversation database.
 
@@ -80,7 +80,7 @@ The runtime should be Bun and TypeScript, using built-in filesystem, process, an
 
 **Claude:** write one complete newline-delimited message to the registered native inbox socket, including the target session ID. The installed implementation classifies this input as a peer message and applies its inbound controls. The receiver's token stays private: it must not be exported to another agent or copied into a registration, since it can identify the sender as one of the receiver's own children.
 
-Claude exposes the socket to its commands. A small Claude skill can supply the native session ID through its documented substitution when joining. A future SessionStart hook could automate rejoining, but the first experiment should use explicit attachment to existing conversations.
+The tested Claude version exposes both `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_MESSAGING_SOCKET` to its commands, so joining requires no skill or hook. A future SessionStart hook could automate rejoining; the MVP uses explicit attachment to existing conversations.
 
 The Claude socket address is documented for script use, but the full wire format and receipt contract are not public guarantees. Keep serialization in one small adapter, record the tested running version, and test it again after a relevant update. An installed binary's version alone does not identify an already-running session's version.
 
@@ -128,12 +128,12 @@ Add a durable mailbox only if actual use demonstrates a need to send while recip
 
 ## Evidence and remaining uncertainty
 
-This proposal comes from source and documentation inspection, not live delivery testing.
+The architecture came from source and documentation inspection. Subsequent implementation and live tests are recorded separately in [VERIFICATION.md](VERIFICATION.md).
 
 - [Vibescript engineering](</Users/max/Documents/Dev/best practices/vibescript/docs/engineering.md>): state ownership, boundary validation, local adapter pressure, and direct dependency order. [Verification guidance](</Users/max/Documents/Dev/best practices/vibescript/docs/drafts/verification.md>) supports testing the actual failures with the cheapest effective checks.
 - [Hummingbirds prompt](/Users/max/Documents/Dev/hummingbirds/src/prompt_template.md) supplies the asynchronous interaction model; [its server](/Users/max/Documents/Dev/hummingbirds/src/server.ts) owns Codex execution. [Its TODO](/Users/max/Documents/Dev/hummingbirds/todo.md) identifies accepted-message loss and unnecessary activation as open issues.
 - [Colony Codex bridge](</Users/max/Documents/Dev/Dear Larry/colony-messaging/channel/codex-live-bridge.ts>) chooses the first loaded thread. [Colony's server](</Users/max/Documents/Dev/Dear Larry/colony-messaging/channel/server.ts>) marks messages read after notification writes. These are specific behaviors to avoid carrying forward.
-- [Codex's August 20 release notes](https://learn.chatgpt.com/docs/changelog) document queueing to existing sessions and idle wakeup. Both installed Codex binaries expose the command. Delivery into this particular desktop conversation and access from its sandbox remain untested.
-- [Claude's native inbox documentation](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket) documents external socket access. Inspection of installed Claude Code 2.1.261 establishes peer classification, target-session checking, and absence of a per-line receipt in that version. [Claude skills](https://code.claude.com/docs/en/skills#available-string-substitutions) document session-ID substitution. The running-session round trip remains untested.
+- [Codex's August 20 release notes](https://learn.chatgpt.com/docs/changelog) document queueing to existing sessions and idle wakeup. Both installed Codex binaries expose the command. A successful queue invocation is submission evidence; observing the model consume that input is a separate check.
+- [Claude's native inbox documentation](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket) documents external socket access. Inspection of Claude Code 2.1.261 establishes peer classification, target-session checking, and absence of a per-line receipt in that version. Live inspection also confirmed the identity variables available to commands in this version.
 
 Keep the name **Undercurrent** for the MVP. Naming does not need to hold up the experiment.

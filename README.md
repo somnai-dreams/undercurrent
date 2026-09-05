@@ -1,128 +1,191 @@
 # Undercurrent
 
-A small courier between existing Codex and Claude conversations. Native hosts deliver the messages and retain conversation history. Undercurrent stores registrations, policies, and optional remote connection credentials; it has no message database, offline queue, or agent launcher.
+Lightweight messaging between existing **Codex and Claude Code conversations**.
 
-## Two settings
+Ask another agent a question, send it a review request, and receive its reply in your original conversation. Undercurrent uses the hosts' native messaging and existing sessions. It needs no extra model API keys, agent launcher, or message database.
 
-| Setting | Meaning |
-| --- | --- |
-| `join: auto` | Installed startup hooks register conversations automatically. |
-| `join: manual` | A conversation appears after an explicit `uc join`. |
-| `join: off` | Participation is disabled, including previously registered conversations. |
-| `allow: ["self"]` | Allow only conversations registered in the same project, including when inherited globally. |
-| `allow: "all"` | Allow exchange with every participating local project and active external pairing, including future ones. |
-| `allow: [...]` | Allow only the listed projects and external pairings. An empty list permits no messages. |
+**Status:** early dogfood release. Local Codex–Claude round trips have been verified with real conversations. Automatic startup/shutdown hooks and remote messaging between two physical machines still need live verification.
 
-Discovery and permission are separate. **Joined conversations announce their name and native address to local discovery and every already paired remote contact, including strangers.** `uc peers` distinguishes **peers**, whose projects permit exchange in both directions, from **strangers**, where a permission is missing. Registration does not prove the agent is online. Use manual registration or `off` when a conversation should not appear.
+## Install
 
-Global defaults live in `~/.undercurrent/config.json` (or `UNDERCURRENT_HOME/config.json`). Each project's `.undercurrent.json` overrides individual fields. A project allow-list **replaces** the global list; lists are never merged implicitly. With neither file, defaults are `join: off, allow: []`.
+You need **Bun 1.3.14 or later**, Codex or Claude Code, and access to this private repository. The native adapters have been tested on macOS; see the [verification notes](https://github.com/somnai-dreams/undercurrent/blob/main/VERIFICATION.md) for host versions and evidence.
 
-For example, a project can allow only its own conversations and one existing external pairing:
-
-```json
-{
-  "join": "auto",
-  "allow": [
-    "self",
-    "contact:11111111-1111-4111-8111-111111111111"
-  ]
-}
-```
-
-Replace the example contact with an actual pairing ID. `self` is an explicit relative permission; it never permits remote contacts or a different local project. Only the owner should change permissions; local agents remain subject to the native host's filesystem permissions and user instructions. A configuration file is not a separate owner-only security boundary.
-
-## Setup
-
-Install the downloadable package with Bun 1.3.14 or later, then configure your machine:
+With the GitHub CLI signed in:
 
 ```sh
-bun install -g ./undercurrent-0.1.0.tgz
+gh repo clone somnai-dreams/undercurrent
+cd undercurrent
+bun install --frozen-lockfile
+bun link
 uc setup --global
 ```
 
-The package is not published to npm yet. It has no runtime package dependencies and uses your existing Codex and Claude sessions and logins. `uc setup` detects installed hosts by their executable or configuration directory; use `--host codex`, `--host claude`, or `--host both` to select explicitly.
+This makes `uc` available on your machine and installs the agent skill plus startup/end hooks for detected hosts. To choose explicitly, add `--host codex`, `--host claude`, or `--host both` to setup.
 
-Global setup installs user-wide hooks and skills once. A new global policy is:
+New installations default to:
 
 ```json
 { "join": "auto", "allow": ["self"] }
 ```
 
-New conversations use that policy without creating configuration files in every project. Add a project's `.undercurrent.json` only for overrides, such as `{ "join": "off" }` or `{ "join": "manual" }`. Existing global and project policies are preserved, including explicit off settings. `uc config` shows the effective policy for the current directory.
+Conversations register at startup and can exchange messages with other conversations in the same project. Existing policies are preserved. You can use Undercurrent in another repository without installing it there again.
 
-For installation limited to one project:
+Codex requires native hook review; the CLI provides `/hooks` to inspect and trust the installed commands. Claude's native workspace trust also applies. Setup does not approve hooks for you. See the [Codex hook guide](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks) and [Claude hook guide](https://code.claude.com/docs/en/hooks).
 
-```sh
-uc setup
+Keep this checkout in place: `bun link` and the installed hooks refer to it. Undercurrent is not published to npm yet. For a portable installation, see [Packaging](#packaging).
+
+## Try it in a project
+
+1. Open Codex and Claude Code in **the same checkout folder**. Separate Git worktrees currently count as different projects.
+2. Ask each agent to use the `undercurrent` skill and run `uc config` and `uc peers`. Check whether it registered automatically before manually joining; startup is part of the dogfood test.
+3. Have the agents attach or give themselves useful labels. Run these **through each agent's tools**, where the native conversation identity is available:
+
+   Codex:
+
+   ```sh
+   uc join --name builder --about "Implementing the change"
+   ```
+
+   Claude:
+
+   ```sh
+   uc join --name reviewer --about "Reviewing the change"
+   ```
+
+4. Ask Codex to send a request:
+
+   ```sh
+   uc peers
+   uc send reviewer "Please review the current diff and send your findings back through Undercurrent."
+   ```
+
+5. Claude replies using the incoming **From** address and **Message ID**:
+
+   ```sh
+   uc send '<From address>' --file findings.txt --in-reply-to '<Message ID>'
+   ```
+
+Those angle-bracket values are placeholders for the actual incoming headers. Ordinary final assistant text is **not forwarded**. Codex may consume a reply after its active turn ends, while Claude can receive messages between tool calls.
+
+For the first trial, give one agent a small real change and the other the review role. Check that they can find each other, exchange a useful question and reply, and resume messaging after reopening a session. Report any step that required manual intervention.
+
+## Everyday commands
+
+| Command | Purpose |
+| --- | --- |
+| `uc config` | Show the current directory's effective project policy. |
+| `uc peers` | List registered conversations, addresses, and permission relationships. |
+| `uc join --name builder --about "Working on search"` | Attach this conversation or update its description and native destination. |
+| `uc send reviewer "A focused question"` | Send text to a unique label or exact address. |
+| `uc send reviewer --file findings.txt` | Send a longer or multiline message. |
+| `uc leave` | Remove this conversation's registration until it rejoins. |
+| `uc --help` | Show all commands, including optional remote messaging. |
+
+Labels are conveniences. Exact addresses look like `codex:<thread UUID>` or `claude:<session UUID>`. If a label matches several conversations, the send fails and lists their exact addresses; choose the intended recipient from those.
+
+Messages are limited to 32 KiB. File input and piped stdin preserve multiline text; `--` permits quoted text beginning with a dash. `--file` sends the file's text, not an attachment. For larger material, send a summary and a reference the recipient can access.
+
+## Two settings: joining and permission
+
+Global defaults live in `~/.undercurrent/config.json`. A project's `.undercurrent.json` overrides individual fields. An allow-list **replaces**, rather than extends, the inherited list. With no configuration at either level, participation is off.
+
+| Setting | Behavior |
+| --- | --- |
+| `"join": "auto"` | Installed startup/resume hooks register conversations. |
+| `"join": "manual"` | An agent must explicitly run `uc join`. |
+| `"join": "off"` | Disable participation, including existing registrations. |
+| `"allow": ["self"]` | Permit exchange only within this exact local project. |
+| `"allow": []` | Permit no messages, including within this project. |
+| `"allow": ["project:/absolute/path", "contact:<pairing UUID>"]` | Permit selected local projects and external pairings. |
+| `"allow": "all"` | Permit all participating projects and active pairings, including future ones. |
+
+For example, disable Undercurrent in one repository by putting this in its `.undercurrent.json`:
+
+```json
+{ "join": "off" }
 ```
 
-Use either global or project installation. Existing hooks in the other scope remain; native hosts can run both. Repeated startup for an already registered destination refreshes registration without another startup notice; simultaneous first invocations can still both announce. Registration and leaving use the same exact conversation identity. Setup does not scan other projects or remove their files.
+**Peers and strangers describe permissions, not online status.** A peer has permission to exchange messages in both directions; a stranger is missing permission on at least one side. A denied send does not wake the recipient or send it an approval request.
 
-The installer preserves unrelated hooks and settings. Project destination paths cannot follow symlinks. Global native configuration and skills directories can point to shared dotfiles directories; individual configuration and skill targets still cannot be symlinks. Global Codex files use `~/.codex` or `CODEX_HOME`; Claude files use `~/.claude` or `CLAUDE_CONFIG_DIR`. Commands pin the selected Undercurrent state directory and use absolute Bun and installed-package paths. If you set a custom `UNDERCURRENT_HOME` during setup, use the same value for ordinary `uc` commands so they see the hook's registrations. Codex requires native hook review in `/hooks`; Claude's native workspace trust also applies. Hooks follow the documented [Codex](https://learn.chatgpt.com/docs/hooks) and [Claude](https://code.claude.com/docs/en/hooks) formats. Actual host-emitted lifecycle events remain unverified; executing the packaged command with native-shaped events is verified.
+**Discovery is separate from permission.** Joined conversations advertise their names and native addresses to local discovery and every already paired remote contact, including strangers. Transcripts are not shared through discovery. Use manual joining or `off` to control participation.
 
-After upgrading the package, rerun the same setup command. It replaces its tagged hooks and refreshes unedited generated skills. Locally edited or different unmanaged skills are preserved; the error gives an exact backup command to use after reviewing the file. A partially completed setup reports failure and keeps completed steps; rerunning is supported. Installation never approves native hooks for you.
-
-For an early development installation with untagged hooks, run the updated checkout's setup before switching to the packaged executable. It recognizes the old command at that checkout path and adds the upgrade marker. Unmarked hooks from a different checkout must be reviewed in the native hook configuration; setup does not remove arbitrary commands merely because they end in `cli.ts hook`.
-
-From this development checkout, use `bun install --frozen-lockfile` and `bun link`. `bun run pack` creates the installable archive in `dist/`. `uc --version` reports the installed version. The lower-level `uc init` and `uc install <codex|claude>` commands remain available for project configuration and integration separately; `uc init --global` creates inactive defaults without installing integrations.
-
-Existing conversations can join now:
-
-```sh
-uc join --name builder --about "Implementing the transport"
-uc config
-uc peers
-```
-
-Joining reads the native session identity from its environment, never from the working directory. Project discovery follows the nearest `.undercurrent.json` or Git boundary; nested repositories use their own policy plus global defaults. A non-repository directory with no project policy uses its current directory as the project root. Stored canonical roots determine policy thereafter.
-
-Local and remote peer listings use a joined conversation's registered project to calculate permissions, matching sends even after changing directories. Without an attached conversation, listings use the current directory's project. `uc config` and permission-editing commands always refer to the current directory's project. Rejoining explicitly updates a conversation's registered project.
-
-Configuration and generated integrations contain local paths and choices. This checkout ignores them and includes `undercurrent.example.json`. Other projects should deliberately choose whether to track their own configuration. Machine credentials never go into project files.
-
-## Permission and messages
-
-To permit a local project or an already paired external contact:
+The owner can grant or remove access from the intended project:
 
 ```sh
 uc allow 'project:/absolute/path/to/other-project'
 uc allow 'contact:<pairing UUID>'
+uc disallow 'contact:<pairing UUID>'
 ```
 
-The command changes only the current project's list. Project permissions must name the actual project root: a subfolder or file is refused, and a subfolder error shows the root to use. Trailing slashes in policy paths are normalized. The other project's owner must allow the exchange too. Add `--global` only to change global defaults. Permission does not mean an agent must reply or undertake a task. A blocked message fails without waking the receiving agent; it is not an approval request. The failure describes the required owner action.
+Both sides must allow the exchange. Project grants name an actual project root, not a subfolder. Add `--global` only when changing machine-wide defaults. `self` never permits remote contacts. Agents should not change permissions merely to unblock their own requests.
 
-```sh
-uc send reviewer "Please review the current diff."
-uc send reviewer --file findings.txt
-cat findings.txt | uc send reviewer --stdin
-```
+Project membership is a local guardrail: `uc join` binds the conversation to its current project. It is not isolation from agents with access to the same filesystem. Peer messages provide no user approval or additional authority; native permissions still apply.
 
-Choose one text source. Messages must be nonempty and at most 32 KiB in UTF-8. Use `--` before quoted text starting with a dash. For larger material, send a summary and a file reference. Duplicate names produce an ambiguity error listing exact addresses: `codex:<thread UUID>` or `claude:<session UUID>`.
+## Delivery and lifecycle
 
-Incoming messages include **From** and **Message ID**. Reply to those exact values:
+Commands return JSON. A send reports the message ID, addresses, and available native evidence:
 
-```sh
-uc send '<From address>' --file reply.txt --in-reply-to '<Message ID>'
-```
-
-Reply when useful; do not acknowledge acknowledgments. Final assistant text is not forwarded. Peer messages provide no user approval or additional authority. Native sandbox checks still apply; run attachment and sends as individual commands so those checks can assess them.
-
-Remove a permission with `uc disallow <principal>`. Removing one item from `allow: "all"` is refused; replace it with a selected list, or use `uc disallow all` to clear it. Use `uc remote revoke <pairing UUID>` to end an external relationship at the relay. A future pairing gets a new identity, so old specific grants cannot re-arm. The deliberate wildcard `allow: "all"` still permits future active pairings.
-
-`uc leave` removes only the current registration. Idle agents remain registered; session-end hooks remove them. A subsequent automatic startup/resume rejoins and refreshes Claude's socket. Crashes or skipped hooks can leave stale entries. There is no Undercurrent heartbeat or idle timer.
-
-## Results
-
-Commands return JSON. Sends include exact addresses and a message ID.
-
-| Exit | Result | Meaning |
+| Result | Exit | Meaning |
 | --- | --- | --- |
-| 0 | `submitted` | Codex queue returned success, or Claude's socket write completed. It does not mean admitted, read, or acted upon. Other successful commands also exit 0. |
-| 1 | `failed` | No confirmed submission was made; permission failures occur before native handoff. |
-| 2 | `uncertain` | The message may already have arrived. No retry was made. |
+| `submitted` | 0 | The Codex queue accepted the handoff, or the complete message was written to Claude's socket. Reading and admission are unconfirmed. |
+| `failed` | 1 | No submission occurred, such as when input or permission checks failed before handoff. |
+| `uncertain` | 2 | The message may already have arrived. Do not automatically retry. |
 
-Claude's socket has no admission receipt. Check the recipient before deciding to resend an uncertain message. Codex errors retain the last 4 KiB of native diagnostics without changing the evidence classification.
+An actual reply confirms the agent received the message. Claude's socket provides no admission receipt, and native controls can hold or refuse incoming text. Codex failures include native diagnostics when available.
 
-`UNDERCURRENT_HOME` selects the state directory. `UNDERCURRENT_CODEX_BIN` selects one Codex executable, not a shell command. Native identity comes from `CODEX_THREAD_ID`, or both `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_MESSAGING_SOCKET`; mixed provider environments are rejected. Do not copy another conversation's identity or messaging token.
+Idle conversations remain registered. Session-end hooks remove registrations; a later automatic startup/resume rejoins and refreshes Claude's socket. Crashes or skipped hooks can leave stale entries. There is no idle timer, heartbeat, offline mailbox, or guaranteed message ordering.
 
-See [REMOTE.md](REMOTE.md) for optional invitation-based messaging between machines. The source checkout's `VERIFICATION.md` records live evidence and remaining gates; internal design and verification notes are excluded from the distributed package. Run `bun run check` in the checkout for strict TypeScript, lint, and tests.
+## If something does not work
+
+| Symptom | Check |
+| --- | --- |
+| `uc` is not found | Ensure Bun's global bin directory is on the agent's `PATH`; open a new session after installation. |
+| This conversation is missing | Run `uc config`, check native hook review/errors, then ask that agent to run `uc join`. Joining cannot override `join: off`. |
+| “Cannot identify the current conversation” | Run join/send through Codex or Claude's tools, not an unrelated terminal. |
+| Claude reports a changed socket | Run `uc join` again in that Claude conversation. |
+| A conversation is a stranger | Check both projects' policies and exact checkout paths. Have the owner decide whether to grant access. |
+| A send is submitted but no reply appears | Check the recipient and let the active Codex turn finish. Submitted does not mean read; ordinary final text is not forwarded. |
+| A send is uncertain | Inspect the recipient before deciding on a follow-up; do not blindly resend. |
+
+Listings use the joined conversation's registered project even after changing directories; `uc config` describes the current directory. An explicit rejoin changes the registered project. A custom `UNDERCURRENT_HOME` must be the same for setup, hooks, and ordinary commands. `UNDERCURRENT_CODEX_BIN` can select a different Codex executable.
+
+## Setup scope and upgrades
+
+Use `uc setup --global` for all projects, or run `uc setup` in a project to limit installation to that checkout. Avoid installing both scopes unnecessarily: native hosts can invoke both. In auto mode, repeated startup for an already registered destination is quiet; simultaneous first invocations can both announce.
+
+Global Codex files use `~/.codex` or `CODEX_HOME`; Claude uses `~/.claude` or `CLAUDE_CONFIG_DIR`. Global configuration and skills directories may point into dotfiles. Project paths and individual integration files cannot be symlinks. Setup preserves unrelated settings and never scans other projects to remove installations.
+
+After updating the checkout or installed package, rerun the same setup command. It replaces marked Undercurrent hooks and refreshes unedited generated skills. Edited or different unmanaged skills are preserved; the error supplies an exact backup-and-rerun command. Completed steps remain after a partial setup failure.
+
+For early development installations with unmarked hooks, run the updated checkout's setup before switching to a packaged executable. Hooks from a different old checkout need review in the native configuration; setup does not delete unrelated commands based on their filename.
+
+## Other machines and people's agents
+
+The optional remote prototype connects trusted machines through a one-time invitation and a hosted relay. Both sides choose which projects allow the pairing and run a receiving bridge. The relay operator can read messages; transport uses HTTPS, without end-to-end encryption. Both receivers must be connected for a round trip: the relay stores no messages for later delivery.
+
+Hosting and TLS are currently your responsibility; there is no bundled public relay. Start with local messaging, then follow the [remote setup guide](REMOTE.md) for the two-machine experiment.
+
+## Packaging
+
+To build an installable archive from this checkout:
+
+```sh
+bun run pack
+bun install -g ./dist/undercurrent-0.1.0.tgz
+uc setup --global
+```
+
+The package has no runtime dependencies beyond Bun. It includes the CLI, skill, and usage guides, and excludes local state, credentials, generated integrations, tests, and internal design/verification notes. npm publication is disabled while the package remains private.
+
+## Development
+
+```sh
+bun install --frozen-lockfile
+bun run check
+```
+
+Checks run strict TypeScript 7, type-aware lint, and tests, including an isolated installation from a real package archive. Local socket and relay fixtures need permission to open listeners.
+
+The [design notes](https://github.com/somnai-dreams/undercurrent/blob/main/DESIGN.md) explain the native adapters and small state model. The [verification record](https://github.com/somnai-dreams/undercurrent/blob/main/VERIFICATION.md) separates tested behavior from remaining live checks.
+
+Undercurrent continues earlier experiments with agent messaging. Hummingbirds provided a later reference for keeping the system small and direct; Undercurrent has its own implementation and does not depend on Hummingbirds code.

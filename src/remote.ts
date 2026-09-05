@@ -1,8 +1,9 @@
-import { link, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { addressOf, formatAddress, parseNativeAddress } from './data.ts'
-import type { Address, Failure, Result } from './data.ts'
-import { listPeers, resolvePeer } from './registry.ts'
+import type { Address, Failure, Registration, Result } from './data.ts'
+import { listPeers, listRegistrations, resolvePeer } from './registry.ts'
+import { editProjectShare, projectAllows, readProject, removeProjectContact } from './project.ts'
 import {
   decodeInvitation, encodeInvitation, maxFrameBytes, parseContacts, parseDelivery,
   parseIdentity, parseMachineId, parseRemoteResult, validateOrigin,
@@ -91,7 +92,7 @@ export async function sharePeer(home: string, contactId: string, address: Addres
   if (!contacts.value.some(contact => contact.id === id.value)) return fail('This machine has no active pairing with that contact.', 'not-found')
   const registration = await resolvePeer(home, formatAddress(parsed.value))
   if (!registration.ok) return registration
-  return writeAtomic(grantPath(home, id.value, parsed.value), { contactId: id.value, address: parsed.value })
+  return editProjectShare(registration.value.projectRoot, id.value, parsed.value, true)
 }
 
 export async function unsharePeer(home: string, contactId: string, address: Address): Promise<Result<void>> {
@@ -99,12 +100,11 @@ export async function unsharePeer(home: string, contactId: string, address: Addr
   if (!contact.ok) return contact
   const peer = parseNativeAddress(address)
   if (!peer.ok) return peer
-  try {
-    await rm(grantPath(home, contact.value, peer.value), { force: true })
-    return { ok: true, value: undefined }
-  } catch {
-    return fail('Cannot remove the local sharing permission.')
-  }
+  const registrations = await listRegistrations(home)
+  if (!registrations.ok) return registrations
+  const registration = registrations.value.find(item => formatAddress(addressOf(item.destination)) === formatAddress(peer.value))
+  if (registration === undefined) return fail('This conversation is not registered; its project cannot be located.', 'not-found')
+  return editProjectShare(registration.projectRoot, contact.value, peer.value, false)
 }
 
 export async function revokeContact(home: string, contactId: string): Promise<Result<void>> {
@@ -112,11 +112,16 @@ export async function revokeContact(home: string, contactId: string): Promise<Re
   if (!contact.ok) return contact
   const identity = await loadRemoteIdentity(home)
   if (!identity.ok) return identity
-  // Remove local admission first, even if the relay becomes unreachable afterward.
-  try {
-    await rm(join(home, 'shares', contact.value), { recursive: true, force: true })
-  } catch {
-    return fail('Cannot remove local permissions for this contact; relay revocation was not attempted.')
+  // Remove project admission first, even if the relay becomes unreachable afterward.
+  const registrations = await listRegistrations(home)
+  if (!registrations.ok) return registrations
+  const roots: string[] = []
+  for (const registration of registrations.value) {
+    if (!roots.includes(registration.projectRoot)) roots.push(registration.projectRoot)
+  }
+  for (const root of roots) {
+    const removed = await removeProjectContact(root, contact.value)
+    if (!removed.ok) return fail(`Cannot remove project sharing rules: ${removed.error.message} Relay revocation was not attempted.`)
   }
   const response = await requestJson(identity.value.origin, '/revoke', 'POST', identity.value.ownerToken, JSON.stringify({ contactId: contact.value }))
   if (!response.ok || response.status !== 200) return fail('Local sharing was removed. Relay revocation is unconfirmed; no retry was made.')
@@ -151,7 +156,7 @@ export async function sendRemote(home: string, to: RemoteAddress, message: Messa
   if (!identity.ok) return { status: 'failed', error: identity.error.message }
   const source = await resolvePeer(home, formatAddress(message.from))
   if (!source.ok) return { status: 'failed', error: source.error.message }
-  const shared = await hasGrant(home, contactId.value, addressOf(source.value.destination))
+  const shared = await projectShares(source.value, contactId.value)
   if (!shared.ok) return { status: 'failed', error: shared.error.message }
   if (!shared.value) return { status: 'failed', error: `Share this conversation first with uc remote share ${contactId.value} ${formatAddress(message.from)}.` }
   const headers: Record<string, string> = {
@@ -280,7 +285,7 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
       const visible: RemotePeer[] = []
       for (const peer of peers.value) {
         const address = addressOf(peer.destination)
-        const shared = await hasGrant(home, delivery.contactId, address)
+        const shared = await projectShares(peer, delivery.contactId)
         if (!shared.ok) return { status: 'failed', error: shared.error.message }
         if (shared.value) visible.push({ name: peer.name, address })
       }
@@ -290,7 +295,7 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
     case 'send': {
       const peer = await resolvePeer(home, formatAddress(delivery.to))
       if (!peer.ok) return { status: 'failed', error: 'The requested conversation is not registered on this machine.' }
-      const shared = await hasGrant(home, delivery.contactId, delivery.to)
+      const shared = await projectShares(peer.value, delivery.contactId)
       if (!shared.ok) return { status: 'failed', error: shared.error.message }
       if (!shared.value) return { status: 'failed', error: 'This conversation is not shared with your contact.' }
       return sendMessage(peer.value.destination, {
@@ -301,20 +306,10 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
   }
 }
 
-async function hasGrant(home: string, contactId: string, address: Address): Promise<Result<boolean>> {
-  const raw = await readJson(grantPath(home, contactId, address))
-  if (!raw.ok) return raw.error.kind === 'not-found' ? { ok: true, value: false } : raw
-  if (!isObject(raw.value) || Object.keys(raw.value).length !== 2) return fail('A local sharing permission is malformed.')
-  const contact = parseMachineId(raw.value['contactId'])
-  const peer = parseNativeAddress(raw.value['address'])
-  if (!contact.ok || !peer.ok || contact.value !== contactId || formatAddress(peer.value) !== formatAddress(address)) {
-    return fail('A local sharing permission identifies a different contact or conversation.')
-  }
-  return { ok: true, value: true }
-}
-
-function grantPath(home: string, contactId: string, address: Address): string {
-  return join(home, 'shares', contactId, `${formatAddress(address)}.json`)
+async function projectShares(registration: Registration, contactId: string): Promise<Result<boolean>> {
+  const config = await readProject(registration.projectRoot)
+  if (!config.ok) return config
+  return { ok: true, value: config.value !== null && projectAllows(config.value, addressOf(registration.destination), contactId) }
 }
 
 async function withSetup<T>(home: string, run: () => Promise<Result<T>>): Promise<Result<T>> {
@@ -357,20 +352,6 @@ async function saveNewIdentity(home: string, identity: RemoteIdentity): Promise<
     return fail(`Remote enrollment succeeded, but remote.json could not be published. Check ${temporary} for its recovery identity before attempting another enrollment.`)
   }
   try { await rm(temporary, { force: true }) } catch { return fail(`The identity was saved, but its temporary copy at ${temporary} could not be removed.`) }
-  return { ok: true, value: undefined }
-}
-
-async function writeAtomic(path: string, value: unknown): Promise<Result<void>> {
-  const directory = dirname(path)
-  const temporary = join(directory, `.tmp-${crypto.randomUUID()}`)
-  try {
-    await mkdir(directory, { recursive: true, mode: 0o700 })
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-    await rename(temporary, path)
-  } catch {
-    try { await rm(temporary, { force: true }) } catch { return fail('Cannot save the local sharing permission or remove its temporary file.') }
-    return fail('Cannot save the local sharing permission.')
-  }
   return { ok: true, value: undefined }
 }
 

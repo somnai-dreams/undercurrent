@@ -15,10 +15,22 @@ bun link
 
 This makes `uc` available on your Bun executable path. Keep this checkout in place while using the link.
 
-Ask each participating conversation to run its own join command. For example, ask Codex to run:
+At the root of each project that should participate:
 
 ```sh
-uc join --name builder
+uc init
+uc install codex
+uc install claude
+```
+
+Install only the hosts you use. `init` creates `.undercurrent.json` with automatic joining and no remote sharing. Existing configuration is preserved. The installer adds project-local lifecycle hooks and an agent skill, preserving unrelated hooks/settings. Hook commands use the absolute Bun and checkout paths, so keep both in place.
+
+Codex requires review of the installed definitions in `/hooks` before they run. Then start or resume a conversation. Claude loads project hooks on its next start/resume. These use the documented [Codex](https://learn.chatgpt.com/docs/hooks) and [Claude](https://code.claude.com/docs/en/hooks) session events; automatic execution by these installed hosts remains a live verification step.
+
+Existing conversations can join immediately. For example, ask Codex to run:
+
+```sh
+uc join --name builder --about "Implementing the messaging transport"
 ```
 
 And ask Claude Code to run:
@@ -30,6 +42,32 @@ uc join --name reviewer
 Joining reads the current conversation's identity from its environment. Running it in an unrelated terminal cannot identify the intended conversation. Native sandbox permissions may require the host's normal, scoped approval to access the registry or messaging endpoint.
 
 Run attachment and sends as individual commands so the native permission check can assess each operation.
+
+## Project policy
+
+```json
+{
+  "join": "auto",
+  "share": []
+}
+```
+
+`auto` joins on startup/resume, `manual` requires an explicit join, and `off` disables participation. An absent file also disables participation. Configuration is found from the session directory upward, stopping at a Git repository boundary. A nested repository does not inherit its parent's opt-in. Registered peers retain their canonical project root; changing the receiver's working directory cannot change their policy.
+
+`share` controls remote discovery, incoming messages, and sending to contacts. A rule has a contact's machine UUID and either exact native addresses or `"all"`, which includes future registrations in this project:
+
+```json
+{
+  "join": "auto",
+  "share": [
+    { "contact": "00000000-0000-0000-0000-000000000001", "peers": "all" }
+  ]
+}
+```
+
+Replace the example contact UUID with a trusted contact from `uc remote contacts`. For selected conversations, use `uc remote share <contact UUID> <peer>`; it edits this same project file with the peer's exact native address. Missing or removed rules deny access on the next check, without restarting the receiver. Names and descriptions never grant access.
+
+The file contains machine-specific policy, so this checkout ignores it in Git and includes `undercurrent.example.json`. Keep it private or choose deliberately to track it in other projects. Local agents can edit project files: policy relies on their existing host permissions and the user's instructions, not a separate owner-only security boundary. Machine credentials and contact relationships remain under `~/.undercurrent`; they are not copied into projects.
 
 ## Send and reply
 
@@ -60,7 +98,9 @@ To remove the current conversation's registration:
 uc leave
 ```
 
-This does not stop the conversation. `uc peers` lists registrations, not live status. Rejoin Claude after resuming if its inbox socket changes; joining again refreshes its registration. There is no automatic recipient startup or retry.
+This does not stop the conversation. `uc peers` lists registrations and descriptions across enabled local projects, not live status. Idle conversations remain available; session-end hooks remove only that conversation. A crash or skipped hook can leave a stale registration. There is no Undercurrent idle timer, heartbeat, automatic recipient startup, or retry.
+
+With automatic joining enabled, a later startup/resume rejoins a conversation after `uc leave` and refreshes Claude's socket. Use `manual` or `off` for a persistent project-wide change. Codex can itself end a session after 30 minutes idle with no connected client viewing it; Undercurrent follows the host's SessionEnd event.
 
 ## Results and configuration
 

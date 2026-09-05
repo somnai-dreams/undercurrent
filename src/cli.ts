@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { currentDestination } from './current.ts'
 import { addressOf, formatAddress } from './data.ts'
-import type { Failure, Registration, Result } from './data.ts'
+import type { Failure, Provider, Registration, Result } from './data.ts'
 import { joinPeer, leavePeer, listPeers, resolvePeer } from './registry.ts'
 import { createMessage, sendMessage } from './send.ts'
 import type { SendOutcome } from './send.ts'
@@ -12,6 +12,9 @@ import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
 import { formatRemoteAddress, parseRemoteAddress } from './remote-protocol.ts'
 import { sendRemote } from './remote.ts'
 import { errorText } from './validation.ts'
+import { findProject } from './project.ts'
+import { initializeProject, installIntegration } from './install.ts'
+import { runHook } from './hooks.ts'
 
 type TextSource =
   | { kind: 'text'; text: string }
@@ -20,7 +23,9 @@ type TextSource =
 
 type Command =
   | { kind: 'help' }
-  | { kind: 'join'; name: string }
+  | { kind: 'init' }
+  | { kind: 'install' | 'hook'; provider: Provider }
+  | { kind: 'join'; name: string; about: string | null }
   | { kind: 'peers' }
   | { kind: 'leave' }
   | { kind: 'remote' | 'relay'; args: string[] }
@@ -29,7 +34,9 @@ type Command =
 const help = `Undercurrent — messages between existing agent conversations.
 
 Usage:
-  uc join --name <label>
+  uc init
+  uc install <codex|claude>
+  uc join --name <label> [--about <short description>]
   uc peers
   uc send <label|address> "message" [--in-reply-to <message UUID>]
   uc send <label|address> --file <path> [--in-reply-to <message UUID>]
@@ -58,6 +65,9 @@ Exact addresses: codex:<thread UUID> or claude:<session UUID>.
 Use -- before message text that begins with a dash.
 Join in each participating conversation before sending. Rejoin Claude after
 its inbox socket changes. Peer listings show registrations, not live status.
+Project policy lives in .undercurrent.json; absent or off disables participation.
+Install lifecycle hooks once per host/project to auto-join on start/resume and
+leave on session end. Idle does not detach a peer. Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.
 Submitted means queued in Codex or written to Claude's socket, not read.
@@ -87,6 +97,33 @@ async function main(args: string[]): Promise<number> {
 
   if (command.value.kind === 'remote') return runRemoteCommand(home, command.value.args)
   if (command.value.kind === 'relay') return runRelayCommand(home, command.value.args)
+  if (command.value.kind === 'init') {
+    const initialized = await initializeProject(process.cwd())
+    if (!initialized.ok) return fail(initialized)
+    console.log(JSON.stringify({ status: 'configured', projectRoot: initialized.value, config: join(initialized.value, '.undercurrent.json') }))
+    return 0
+  }
+  if (command.value.kind === 'install') {
+    const installed = await installIntegration(process.cwd(), command.value.provider)
+    if (!installed.ok) return fail(installed)
+    console.log(JSON.stringify({ status: 'installed', ...installed.value, next: command.value.provider === 'codex' ? 'Review and trust the project hooks in Codex /hooks, then start or resume a session.' : 'Start or resume a Claude session to load the project hooks.' }))
+    return 0
+  }
+  if (command.value.kind === 'hook') {
+    let raw: unknown
+    try { raw = JSON.parse(await Bun.stdin.text()) as unknown }
+    catch (error) {
+      console.error(`Undercurrent hook: invalid JSON input: ${errorText(error)}`)
+      return 1
+    }
+    const result = await runHook(home, command.value.provider, raw)
+    if (!result.ok) {
+      console.error(`Undercurrent hook: ${result.error.message}`)
+      return 1
+    }
+    if (result.value !== null) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: result.value } }))
+    return 0
+  }
 
   if (command.value.kind === 'peers') {
     const peers = await listPeers(home)
@@ -101,7 +138,10 @@ async function main(args: string[]): Promise<number> {
 
   switch (command.value.kind) {
     case 'join': {
-      const peer = await joinPeer(home, { name: command.value.name, destination: current.value })
+      const project = await findProject(process.cwd())
+      if (!project.ok) return fail(project)
+      if (project.value === null) return fail(invalidInput('This project has no .undercurrent.json. Run uc init at its root to enable participation.'))
+      const peer = await joinPeer(home, { name: command.value.name, about: command.value.about, projectRoot: project.value.root, destination: current.value })
       if (!peer.ok) return fail(peer)
       console.log(JSON.stringify({ status: 'joined', ...peerOutput(peer.value) }))
       return 0
@@ -170,9 +210,16 @@ function parseCommand(args: string[]): Result<Command> {
     case 'join': {
       if (args.length === 2 && args[1] === '--help') return { ok: true, value: { kind: 'help' } }
       const name = args[2]
-      if (args.length !== 3 || args[1] !== '--name' || name === undefined) return invalidInput('Usage: uc join --name <label>.')
-      return { ok: true, value: { kind: 'join', name } }
+      if ((args.length !== 3 && args.length !== 5) || args[1] !== '--name' || name === undefined || (args.length === 5 && args[3] !== '--about')) return invalidInput('Usage: uc join --name <label> [--about <short description>].')
+      return { ok: true, value: { kind: 'join', name, about: args[4] === undefined || args[4] === '' ? null : args[4] } }
     }
+    case 'install':
+    case 'hook': {
+      const provider = args[1]
+      if (args.length !== 2 || (provider !== 'codex' && provider !== 'claude')) return invalidInput(`Usage: uc ${command} <codex|claude>.`)
+      return { ok: true, value: { kind: command, provider } }
+    }
+    case 'init':
     case 'peers':
     case 'leave':
       if (args.length !== 1) return invalidInput(`Usage: uc ${command}.`)
@@ -259,8 +306,8 @@ async function readText(source: TextSource): Promise<Result<string>> {
   }
 }
 
-function peerOutput(peer: Registration): { address: string; name: string; destination: Registration['destination'] } {
-  return { address: formatAddress(addressOf(peer.destination)), name: peer.name, destination: peer.destination }
+function peerOutput(peer: Registration): Registration & { address: string } {
+  return { ...peer, address: formatAddress(addressOf(peer.destination)) }
 }
 
 function invalidInput(message: string): Failure {

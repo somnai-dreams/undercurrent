@@ -8,7 +8,7 @@ This first experiment targets two machines, one invitation, and selected convers
 
 Both participants must trust the relay operator to read message contents and authenticate contacts. HTTPS protects the connection to that operator; it is not end-to-end encryption. The invitation authorizes its holder to become a contact, so share it privately. Invitations expire after ten minutes and can be redeemed once.
 
-Accepting an invitation exposes no conversations. Each owner shares exact native conversation IDs per contact. The same grants govern discovery, incoming messages, and which local conversations can send to that contact. A sender's machine is authenticated through its own credential, and the relay checks that the two machines are paired; its conversation identity is that machine's assertion. A remote peer supplies no user approval or additional authority.
+Accepting an invitation exposes no conversations. Each project's `.undercurrent.json` shares exact native conversation IDs per contact, or all present and future participating conversations in that project. The same rules govern discovery, incoming messages, and which local conversations can send to that contact. A sender's machine is authenticated through its own credential, and the relay checks that the two machines are paired; its conversation identity is that machine's assertion. A remote peer supplies no user approval or additional authority.
 
 Names are display labels. Remote addresses contain the contact's machine UUID and the original native conversation ID:
 
@@ -59,7 +59,7 @@ uc remote contacts
 uc remote share '<contact UUID>' reviewer
 ```
 
-Inside the intended agent, omit `reviewer` to share the current conversation. The peer argument also accepts an exact local address. A label must resolve unambiguously when sharing; the stored grant uses its exact address.
+Inside the intended agent, omit `reviewer` to share the current conversation. The peer argument also accepts an exact local address. A label must resolve unambiguously when sharing; the command writes its exact address to the registered peer's project config. There is no separate grant store. For a project-wide rule, set `peers` to `"all"` in that contact's project rule. Local policy edits rely on native host permissions and user instructions; the file is not an owner-only authorization mechanism.
 
 Keep the receiver running in a terminal on each machine:
 
@@ -85,7 +85,7 @@ uc remote unshare '<contact UUID>' reviewer
 uc remote revoke '<contact UUID>'
 ```
 
-Unsharing blocks subsequent local authorization for that conversation. Revocation invalidates both directions of the contact relationship at the relay. Neither can recall work already admitted to a native adapter. A remote message that was forwarded before revocation can still complete.
+Unsharing blocks subsequent local authorization for that conversation. A `"all"` rule must first be replaced with an explicit list before removing one conversation, or remove the whole rule directly. Revocation invalidates both directions of the contact relationship at the relay. Neither can recall work already admitted to a native adapter. A remote message that was forwarded before revocation can still complete.
 
 ## Delivery and state
 
@@ -97,7 +97,7 @@ Unsharing blocks subsequent local authorization for that conversation. Revocatio
 
 The sender never treats relay acceptance as native submission. A successful native handoff still does not mean an agent read or admitted the message. A refused TCP connection is a definite failure in the tested Bun version. A connection reset can occur after the complete message was consumed, including before any response headers, so it remains uncertain. Unclassified transport errors also remain uncertain. There is no automatic message retry, deduplication guarantee, ordering guarantee, or offline delivery.
 
-The relay stores one credential per machine, contact relationships as pairs of machine IDs, and unused invitations in one private JSON file. Keep that file across restarts. Run one relay process per state file. Connections and pending receipts exist only in memory. Each machine stores one remote identity and individual sharing grants alongside its existing local registrations. There are no remote copies of native transcripts. Sends and peer discovery each use one request; they do not fetch contact credentials first.
+The relay stores one credential per machine, contact relationships as pairs of machine IDs, and unused invitations in one private JSON file. Keep that file across restarts. Run one relay process per state file. Connections and pending receipts exist only in memory. Each machine stores one remote identity alongside its local registrations; sharing policy lives only in the projects' `.undercurrent.json` files. There are no remote copies of native transcripts. Sends and peer discovery each use one request; they do not fetch contact credentials first.
 
 If enrollment loses its response or cannot save the returned credentials, it reports failure and may require a replacement invitation. It does not silently redeem again. Machine removal, credential rotation, pairing existing identities, managed background services, friendly contact aliases, and end-to-end encryption are deferred.
 

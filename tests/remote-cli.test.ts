@@ -20,9 +20,11 @@ test('CLI invitation, selected peers, round trip, unshare, and revocation across
   const bridges: Awaited<ReturnType<typeof startBridge>>[] = []
   try {
     for (const home of [first, second]) {
+      await mkdir(join(home, 'project'))
       const executable = join(home, 'fake-codex')
       await writeFile(executable, `#!${process.execPath}\nawait Bun.write(import.meta.dir + '/capture.json', JSON.stringify(process.argv.slice(2)))\n`)
       await chmod(executable, 0o700)
+      expect((await run(home, ['init'])).exitCode).toBe(0)
       const joined = await run(home, ['join', '--name', 'reviewer'], nativeId)
       expect(joined.exitCode).toBe(0)
     }
@@ -98,7 +100,7 @@ type CommandResult = { exitCode: number; stdout: string; stderr: string }
 
 async function run(home: string, args: string[], threadId?: string): Promise<CommandResult> {
   const child = Bun.spawn([process.execPath, join(project, 'src/cli.ts'), ...args], {
-    cwd: project,
+    cwd: join(home, 'project'),
     env: {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
       UNDERCURRENT_HOME: home,

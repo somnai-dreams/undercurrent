@@ -1,4 +1,5 @@
 import { hasKeys, isObject, isUuid } from './validation.ts'
+import { isAbsolute } from 'node:path'
 
 export type Provider = 'codex' | 'claude'
 
@@ -12,6 +13,8 @@ export type Destination =
 
 export type Registration = {
   name: string
+  about: string | null
+  projectRoot: string
   destination: Destination
 }
 
@@ -75,8 +78,16 @@ export function addressOf(destination: Destination): Address {
 }
 
 export function parseRegistration(raw: unknown): Result<Registration> {
-  if (!isObject(raw) || !hasKeys(raw, ['name', 'destination'])) {
-    return invalidRegistration('A registration must contain exactly name and destination.')
+  if (!isObject(raw) || !hasKeys(raw, ['name', 'about', 'projectRoot', 'destination'])) {
+    return invalidRegistration('A registration must contain exactly name, about, projectRoot, and destination.')
+  }
+  const about = raw['about']
+  if (about !== null && (typeof about !== 'string' || about.trim() === '' || about !== about.trim() || controlPattern.test(about) || Buffer.byteLength(about, 'utf8') > 512)) {
+    return invalidRegistration('About must be null or concise text of at most 512 bytes, without surrounding whitespace or control characters.')
+  }
+  const projectRoot = raw['projectRoot']
+  if (typeof projectRoot !== 'string' || !isAbsolute(projectRoot) || controlPattern.test(projectRoot)) {
+    return invalidRegistration('projectRoot must be an absolute path without control characters.')
   }
   const name = raw['name']
   if (typeof name !== 'string' || name.trim() === '' || name !== name.trim() || name.includes(':') || controlPattern.test(name)) {
@@ -84,7 +95,7 @@ export function parseRegistration(raw: unknown): Result<Registration> {
   }
   const destination = parseDestination(raw['destination'])
   if (!destination.ok) return destination
-  return { ok: true, value: { name, destination: destination.value } }
+  return { ok: true, value: { name, about, projectRoot, destination: destination.value } }
 }
 
 export function parseDestination(destination: unknown): Result<Destination> {

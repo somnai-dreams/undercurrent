@@ -4,7 +4,7 @@
 
 ## Automated checks
 
-`bun run check` passes strict TypeScript 7, type-aware lint, and 47 tests (417 assertions), including the remote prototype checks below. The original 28 local tests cover exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
+`bun run check` passes strict TypeScript 7, type-aware lint, and 64 tests (553 assertions), including the remote prototype and project-policy checks below. The original 28 local tests cover exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 
 A review found that waiting for a Codex wrapper's output streams could exceed the submission timeout when a descendant kept the streams open. The adapter now waits only for process exit, ignores unused output, and terminates its own process group on timeout. A wrapper-and-descendant regression fixture verifies bounded return and one invocation.
 
@@ -13,6 +13,18 @@ Live dogfooding then exposed the cost of discarding native diagnostics. The impr
 Committed regression coverage checks normal and pre-timeout diagnostics, bounded retention from more than 64 KiB of output, and exit of the whole caller process while the fixture descendant still holds stderr open. The caller exited in 29 ms in the final check. The test verifies the descendant remains alive at that point, then stops only that recorded test PID.
 
 ## Live native gate
+
+### Project configuration and lifecycle slice
+
+Project checks cover absent/off/manual policy, nested Git and worktree boundaries, canonical paths, exact contact/address rules, atomic policy edits, and live policy changes in discovery and both remote handoff directions. The `all` rule includes future registrations. Revocation cleans rules in registered projects even when those projects are off. An invalid policy prevents silent permission changes.
+
+Lifecycle fixtures cover startup/resume, preservation of descriptions, Claude socket refresh, exact session-end cleanup, rejection of turn-completion events, and malformed or conflicting native identity evidence. The installer preserves unrelated settings, can be rerun, refuses paths through symlinks, and its generated shell command was executed against a native-shaped event in an isolated temporary project. The skill passes the Skill Creator validator.
+
+This checkout now has a private `.undercurrent.json` (`auto`, no remote shares), project-local Codex and Claude hooks, and their installed skills. The two existing dogfood registrations were explicitly updated to this project with unchanged native addresses and Claude socket; `uc peers` confirms both. Generated local integration files are ignored; the reusable installer and skill are committed.
+
+**Not yet verified:** startup/resume/end events emitted by the actual installed hosts. Codex still needs the user's native `/hooks` trust review. Neither host's trust settings were changed, and no session was restarted to claim this gate. Current evidence establishes the hook handler and installation path, not automatic native invocation.
+
+### Prior courier dogfood
 
 Environment: macOS, Bun 1.3.14, Codex CLI 0.153.4 through the user's existing profile wrapper, Codex desktop's bundled CLI 0.153.1, and a newly started normal interactive Claude Code 2.1.261 session. Undercurrent does not start or manage these sessions.
 

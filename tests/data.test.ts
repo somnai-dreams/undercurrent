@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { addressOf, formatAddress, parseAddress, parseDestination, parseRegistration } from '../src/data.ts'
 
 const id = '01a06f6d-bdbd-7822-a985-3337ea851a95'
+const metadata = { about: null, projectRoot: '/project' }
 
 describe('native addresses', () => {
   test('distinguishes Codex thread identity from Claude session identity', () => {
@@ -23,19 +24,27 @@ describe('registration boundary', () => {
 
   test('requires the correct native identity field and rejects unrelated connection fields', () => {
     const name = 'review'
-    expect(parseRegistration({ name, destination: { provider: 'codex', sessionId: id } }).ok).toBeFalse()
-    expect(parseRegistration({ name, destination: { provider: 'claude', sessionId: id, socketPath: '/tmp/claude.sock', token: 'not-a-registry-field' } }).ok).toBeFalse()
-    expect(parseRegistration({ name, destination: { provider: 'claude', sessionId: id, socketPath: 'relative.sock' } }).ok).toBeFalse()
-    expect(parseRegistration({ name, destination: { provider: 'claude', sessionId: id, socketPath: '/tmp/claude.sock' } })).toEqual({
+    expect(parseRegistration({ ...metadata, name, destination: { provider: 'codex', sessionId: id } }).ok).toBeFalse()
+    expect(parseRegistration({ ...metadata, name, destination: { provider: 'claude', sessionId: id, socketPath: '/tmp/claude.sock', token: 'not-a-registry-field' } }).ok).toBeFalse()
+    expect(parseRegistration({ ...metadata, name, destination: { provider: 'claude', sessionId: id, socketPath: 'relative.sock' } }).ok).toBeFalse()
+    expect(parseRegistration({ ...metadata, name, destination: { provider: 'claude', sessionId: id, socketPath: '/tmp/claude.sock' } })).toEqual({
       ok: true,
-      value: { name, destination: { provider: 'claude', sessionId: id, socketPath: '/tmp/claude.sock' } },
+      value: { ...metadata, name, destination: { provider: 'claude', sessionId: id, socketPath: '/tmp/claude.sock' } },
     })
   })
 
   test('does not accept ambiguous-looking names or malformed JSON values', () => {
     for (const name of ['', ' review', 'review ', 'codex:review', 'review\nother']) {
-      expect(parseRegistration({ name, destination: { provider: 'codex', threadId: id } }).ok).toBeFalse()
+      expect(parseRegistration({ ...metadata, name, destination: { provider: 'codex', threadId: id } }).ok).toBeFalse()
     }
     for (const raw of [null, [], 'review', {}, { name: 'review' }]) expect(parseRegistration(raw).ok).toBeFalse()
+  })
+
+  test('requires explicit project metadata and bounds its description', () => {
+    const registration = { ...metadata, name: 'review', destination: { provider: 'codex', threadId: id } }
+    expect(parseRegistration({ name: registration.name, destination: registration.destination }).ok).toBeFalse()
+    for (const about of ['', ' leading', 'line\nbreak', 'x'.repeat(513)]) expect(parseRegistration({ ...registration, about }).ok).toBeFalse()
+    for (const projectRoot of ['relative', '', '/project\nother']) expect(parseRegistration({ ...registration, projectRoot }).ok).toBeFalse()
+    expect(parseRegistration({ ...registration, about: 'Reviews the shutdown path' }).ok).toBeTrue()
   })
 })

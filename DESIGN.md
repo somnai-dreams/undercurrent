@@ -38,7 +38,7 @@ Labels help people choose a recipient. Exact addresses identify the conversation
 
 ## State and data
 
-The only persistent Undercurrent state is a small registration file per participating native conversation, under one user-level directory such as `~/.undercurrent/peers/`. Each contains a label and a destination:
+Local state is one policy file per project and a small registration file per participating native conversation under `~/.undercurrent/peers/`. Each registration contains descriptive metadata, its canonical project root, and a destination:
 
 ```ts
 type Destination =
@@ -47,6 +47,8 @@ type Destination =
 
 type Registration = {
   name: string
+  about: string | null
+  projectRoot: string
   destination: Destination
 }
 ```
@@ -80,7 +82,7 @@ The runtime should be Bun and TypeScript, using built-in filesystem, process, an
 
 **Claude:** write one complete newline-delimited message to the registered native inbox socket, including the target session ID. The installed implementation classifies this input as a peer message and applies its inbound controls. The receiver's token stays private: it must not be exported to another agent or copied into a registration, since it can identify the sender as one of the receiver's own children.
 
-The tested Claude version exposes both `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_MESSAGING_SOCKET` to its commands, so joining requires no skill or hook. A future SessionStart hook could automate rejoining; the MVP uses explicit attachment to existing conversations.
+The tested Claude version exposes both `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_MESSAGING_SOCKET` to its commands. Project-local SessionStart/SessionEnd hooks now support automatic attachment and cleanup, gated by `.undercurrent.json`. Hooks take native session identity from their event, validate it against the host environment when present, and require Claude's native socket at startup. They never use a turn-completion hook as a departure signal. The installed-host lifecycle path still needs live verification; manual joins remain available.
 
 The Claude socket address is documented for script use, but the full wire format and receipt contract are not public guarantees. Keep serialization in one small adapter, record the tested running version, and test it again after a relevant update. An installed binary's version alone does not identify an already-running session's version.
 

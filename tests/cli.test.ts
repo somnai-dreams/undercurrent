@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -41,14 +41,14 @@ describe('CLI', () => {
     expect(output(joined)).toMatchObject({ status: 'joined', address: `codex:${sender}`, name: 'implementation' })
     expect((await run(fixture, claude, ['join', '--name', 'review'])).exitCode).toBe(0)
     expect(output(await run(fixture, {}, ['peers']))).toEqual({ peers: [
-      { address: `codex:${sender}`, name: 'implementation', destination: { provider: 'codex', threadId: sender } },
-      { address: `claude:${recipient}`, name: 'review', destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
+      { address: `codex:${sender}`, name: 'implementation', about: null, projectRoot: fixture.home, destination: { provider: 'codex', threadId: sender } },
+      { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
     ] })
     const left = await run(fixture, codex, ['leave'])
     expect(left.exitCode).toBe(0)
     expect(output(left)).toEqual({ status: 'left', address: `codex:${sender}` })
     expect(output(await run(fixture, {}, ['peers']))).toEqual({ peers: [
-      { address: `claude:${recipient}`, name: 'review', destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
+      { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
     ] })
   })
 
@@ -155,7 +155,8 @@ describe('CLI', () => {
 })
 
 async function makeFixture(): Promise<Fixture> {
-  const home = await mkdtemp(join(tmpdir(), 'undercurrent-cli-'))
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'undercurrent-cli-')))
+  await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'auto', share: [] }))
   homes.push(home)
   const executable = join(home, 'fake-codex')
   const capture = join(home, 'native-args.json')
@@ -185,7 +186,7 @@ async function run(
   options: { stdin?: string; nativeExitCode?: number } = {},
 ): Promise<CommandResult> {
   const child = Bun.spawn([process.execPath, join(project, 'src/cli.ts'), ...args], {
-    cwd: project,
+    cwd: fixture.home,
     env: {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
       UNDERCURRENT_HOME: fixture.home,

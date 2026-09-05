@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { addressOf } from '../src/data.ts'
+import { addressOf, formatAddress } from '../src/data.ts'
 import type { Registration, Result } from '../src/data.ts'
-import { joinPeer } from '../src/registry.ts'
+import { joinPeer as registerPeer } from '../src/registry.ts'
+import { readProject } from '../src/project.ts'
+import type { ProjectConfig } from '../src/project.ts'
 import { startRelay } from '../src/relay.ts'
 import {
   acceptInvitation, createInvitation, initializeRemote, loadRemoteIdentity,
@@ -22,7 +24,7 @@ const relays: Array<Awaited<ReturnType<typeof startRelay>>> = []
 const servers: Server[] = []
 const bridges: Bridge[] = []
 const httpServers: Array<Bun.Server<undefined>> = []
-const sender: Registration = { name: 'sender', destination: { provider: 'codex', threadId: '00000000-0000-0000-0000-000000000001' } }
+const sender: Pick<Registration, 'name' | 'destination'> = { name: 'sender', destination: { provider: 'codex', threadId: '00000000-0000-0000-0000-000000000001' } }
 const targetId = '00000000-0000-0000-0000-000000000002'
 
 afterEach(async () => {
@@ -36,7 +38,7 @@ afterEach(async () => {
   await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true })))
 })
 
-describe('remote enrollment and grants', () => {
+describe('remote enrollment and project sharing', () => {
   test('one local identity is installed atomically and cannot be overwritten', async () => {
     const home = await temporaryHome()
     const relay = await relayFor(home)
@@ -59,7 +61,7 @@ describe('remote enrollment and grants', () => {
     const pair = await pairedMachines()
     const first = await nativeSocket(join(pair.home, 'first.sock'))
     const second = await nativeSocket(join(pair.home, 'second.sock'))
-    const target: Registration = { name: 'receiver', destination: { provider: 'claude', sessionId: targetId, socketPath: first.path } }
+    const target: Pick<Registration, 'name' | 'destination'> = { name: 'receiver', destination: { provider: 'claude', sessionId: targetId, socketPath: first.path } }
     unwrap(await joinPeer(pair.aHome, sender))
     unwrap(await joinPeer(pair.bHome, target))
     await connectedBridge(pair.bHome)
@@ -88,7 +90,7 @@ describe('remote enrollment and grants', () => {
     expect((await sendRemote(pair.aHome, to, spoof)).status).toBe('failed')
   })
 
-  test('contact revocation removes local grants, and untrusted path-like IDs are refused', async () => {
+  test('contact revocation removes project rules even when participation is off', async () => {
     const pair = await pairedMachines()
     unwrap(await joinPeer(pair.aHome, sender))
     unwrap(await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
@@ -96,11 +98,59 @@ describe('remote enrollment and grants', () => {
     expect((await unsharePeer(pair.aHome, '../../remote.json', addressOf(sender.destination))).ok).toBeFalse()
     expect((await revokeContact(pair.aHome, '../../remote.json')).ok).toBeFalse()
     expect(await readFile(join(pair.aHome, 'remote.json'), 'utf8')).toBe(before)
+    await configureProject(pair.aHome, { join: 'off', share: [{ contact: pair.b.machineId, peers: [addressOf(sender.destination)] }] })
+    unwrap(await unsharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
+    expect(unwrap(await readProject(join(pair.aHome, 'project')))).toEqual({ join: 'off', share: [] })
+    await configureProject(pair.aHome, { join: 'off', share: [{ contact: pair.b.machineId, peers: 'all' }] })
     unwrap(await revokeContact(pair.aHome, pair.b.machineId))
     expect(unwrap(await remoteContacts(pair.aHome))).toEqual([])
     expect(unwrap(await remoteContacts(pair.bHome))).toEqual([])
     expect((await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination))).ok).toBeFalse()
-    expect(await Bun.file(join(pair.aHome, 'shares', pair.b.machineId, 'codex:00000000-0000-0000-0000-000000000001.json')).exists()).toBeFalse()
+    expect(unwrap(await readProject(join(pair.aHome, 'project')))).toEqual({ join: 'off', share: [] })
+    expect(await Bun.file(join(pair.aHome, 'shares')).exists()).toBeFalse()
+  })
+
+  test('all shares future project peers and fresh off policies deny discovery and both handoff directions', async () => {
+    const pair = await pairedMachines()
+    unwrap(await joinPeer(pair.aHome, sender))
+    await configureProject(pair.aHome, { join: 'manual', share: [{ contact: pair.b.machineId, peers: 'all' }] })
+    await configureProject(pair.bHome, { join: 'manual', share: [{ contact: pair.a.machineId, peers: 'all' }] })
+    await connectedBridge(pair.bHome)
+    expect(unwrap(await remotePeers(pair.aHome, pair.b.machineId))).toEqual([])
+    const native = await nativeSocket(join(pair.home, 'future.sock'))
+    const future: Pick<Registration, 'name' | 'destination'> = { name: 'later', destination: { provider: 'claude', sessionId: targetId, socketPath: native.path } }
+    unwrap(await joinPeer(pair.bHome, future))
+    const to: RemoteAddress = { provider: 'remote', machineId: pair.b.machineId, peer: addressOf(future.destination) }
+    const message = unwrap(createMessage(addressOf(sender.destination), 'A peer registered after all was shared', null))
+    expect(unwrap(await remotePeers(pair.aHome, pair.b.machineId))).toEqual([{ name: 'later', address: to.peer }])
+    expect((await sendRemote(pair.aHome, to, message)).status).toBe('submitted')
+    expect(await native.received).toContain(message.text)
+    await configureProject(pair.bHome, { join: 'off', share: [{ contact: pair.a.machineId, peers: 'all' }] })
+    expect(unwrap(await remotePeers(pair.aHome, pair.b.machineId))).toEqual([])
+    expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
+    await configureProject(pair.aHome, { join: 'off', share: [{ contact: pair.b.machineId, peers: 'all' }] })
+    const calls = spyOn(globalThis, 'fetch')
+    try {
+      expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
+      expect(calls).toHaveBeenCalledTimes(0)
+    } finally {
+      calls.mockRestore()
+    }
+  })
+
+  test('a malformed project policy blocks revocation before the relay is contacted', async () => {
+    const pair = await pairedMachines()
+    unwrap(await joinPeer(pair.aHome, sender))
+    unwrap(await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
+    await writeFile(join(pair.aHome, 'project', '.undercurrent.json'), '{')
+    const calls = spyOn(globalThis, 'fetch')
+    try {
+      expect((await revokeContact(pair.aHome, pair.b.machineId)).ok).toBeFalse()
+      expect(calls).toHaveBeenCalledTimes(0)
+    } finally {
+      calls.mockRestore()
+    }
+    expect(unwrap(await remoteContacts(pair.aHome))).toEqual([{ id: pair.b.machineId }])
   })
 
   test('bridge authentication failure and replacement terminate instead of reconnecting', async () => {
@@ -232,7 +282,7 @@ describe('remote enrollment and grants', () => {
     const relay = relays[0]
     if (relay === undefined) throw new Error('Missing relay fixture')
     const capture = join(pair.home, 'native-handoffs.txt')
-    const target: Registration = { name: 'receiver', destination: { provider: 'codex', threadId: targetId } }
+    const target: Pick<Registration, 'name' | 'destination'> = { name: 'receiver', destination: { provider: 'codex', threadId: targetId } }
     unwrap(await joinPeer(pair.aHome, sender))
     unwrap(await joinPeer(pair.bHome, target))
     unwrap(await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
@@ -269,7 +319,7 @@ describe('remote enrollment and grants', () => {
 })
 
 async function temporaryHome(): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), 'undercurrent-remote-'))
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'uc-remote-')))
   homes.push(home)
   return home
 }
@@ -287,7 +337,24 @@ async function pairedMachines(): Promise<{ home: string; aHome: string; bHome: s
   const bHome = join(home, 'b')
   const a = unwrap(await initializeRemote(aHome, relay.url.origin, adminToken))
   const accepted = unwrap(await acceptInvitation(bHome, unwrap(await createInvitation(aHome))))
+  await Promise.all([
+    configureProject(aHome, { join: 'manual', share: [] }),
+    configureProject(bHome, { join: 'manual', share: [] }),
+  ])
   return { home, aHome, bHome, a, b: accepted.identity }
+}
+
+async function configureProject(home: string, config: ProjectConfig): Promise<void> {
+  const root = join(home, 'project')
+  await mkdir(root, { recursive: true })
+  await writeFile(join(root, '.undercurrent.json'), JSON.stringify({
+    join: config.join,
+    share: config.share.map(rule => ({ contact: rule.contact, peers: rule.peers === 'all' ? 'all' : rule.peers.map(formatAddress) })),
+  }))
+}
+
+async function joinPeer(home: string, peer: Pick<Registration, 'name' | 'destination'>): Promise<Result<Registration>> {
+  return registerPeer(home, { ...peer, about: null, projectRoot: join(home, 'project') })
 }
 
 async function connectedBridge(home: string): Promise<Bridge> {

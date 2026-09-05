@@ -36,6 +36,14 @@ An incoming message includes its ID, the sender's exact return address, an optio
 
 Labels help people choose a recipient. Exact addresses identify the conversation. Duplicate labels produce an ambiguity error listing the exact addresses; they never resolve to the newest session. Replies use the exact address from the incoming message, even if labels subsequently change.
 
+## Participation and permission
+
+`join: auto | manual | off` controls announcement and participation. `allow: "all" | Principal[]` controls message exchange, where a principal is a canonical local project root or an external pairing UUID. Global defaults and project overrides use these same fields. Overrides replace a field; lists are not implicitly merged. Defaults are off with an empty list; initializing a project opts it into automatic joining and allows its own conversations.
+
+Peers and strangers are derived from current permissions, not stored relationships. Joined strangers are discoverable locally and to paired contacts; a denied message never reaches the native agent. Both local projects must allow each other. Remote sending and receiving each check their project policy. Allowing a project changes only the caller's project file; it does not grant reciprocal permission or authority to perform a task.
+
+External pairing identity belongs to one accepted connection, not the lifetime of a machine. Revoking it invalidates all of its addresses and specific grants without finding every project that may refer to it. Re-enrollment creates a new identity. A deliberate allow-all policy includes future active pairings.
+
 ## State and data
 
 Local state is one policy file per project and a small registration file per participating native conversation under `~/.undercurrent/peers/`. Each registration contains descriptive metadata, its canonical project root, and a destination:

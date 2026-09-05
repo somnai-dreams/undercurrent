@@ -11,7 +11,7 @@ const nativeId = '00000000-0000-0000-0000-000000000021'
 const hiddenId = '00000000-0000-0000-0000-000000000022'
 const admin = '1'.repeat(64)
 
-test('CLI invitation, selected peers, round trip, unshare, and revocation across isolated machines', async () => {
+test('CLI invitation, project permissions, strangers, round trip, and revocation across isolated machines', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'uc-remote-cli-'))
   const first = join(directory, 'first')
   const second = join(directory, 'second')
@@ -30,13 +30,13 @@ test('CLI invitation, selected peers, round trip, unshare, and revocation across
     }
     const initialized = await run(first, ['remote', 'init', `http://127.0.0.1:${relay.port}`])
     expect(initialized.exitCode).toBe(0)
-    const firstId = field(initialized, 'machineId')
+    const firstMachineId = field(initialized, 'machineId')
     const invitation = await run(first, ['remote', 'invite'])
     expect(invitation.exitCode).toBe(0)
     const accepted = await run(second, ['remote', 'accept', field(invitation, 'invitation')])
     expect(accepted.exitCode).toBe(0)
-    const secondId = field(accepted, 'machineId')
-    expect(field(accepted, 'contactId')).toBe(firstId)
+    const contactId = field(accepted, 'contactId')
+    expect(contactId).not.toBe(firstMachineId)
     for (const home of [first, second]) {
       const contacts = await run(home, ['remote', 'contacts'])
       expect(contacts.exitCode).toBe(0)
@@ -48,20 +48,22 @@ test('CLI invitation, selected peers, round trip, unshare, and revocation across
       expect((await unwrap(bridge).connected).ok).toBeTrue()
     }
 
-    const privatePeers = await run(first, ['remote', 'peers', secondId])
+    const privatePeers = await run(first, ['remote', 'peers', contactId])
     expect(privatePeers.exitCode).toBe(0)
-    expect(JSON.parse(privatePeers.stdout) as unknown).toEqual({ peers: [] })
+    expect(JSON.parse(privatePeers.stdout) as unknown).toEqual({ peers: [{ name: 'reviewer', address: `remote:${contactId}/codex:${nativeId}`, relation: 'stranger' }] })
+    await mkdir(join(second, 'private-project'))
+    await writeFile(join(second, 'private-project', '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
     expect((await run(second, ['join', '--name', 'private'], hiddenId)).exitCode).toBe(0)
-    expect((await run(first, ['remote', 'share', secondId, 'reviewer'])).exitCode).toBe(0)
-    expect((await run(second, ['remote', 'share', firstId], nativeId)).exitCode).toBe(0)
-    const secondAddress = `remote:${secondId}/codex:${nativeId}`
-    const firstAddress = `remote:${firstId}/codex:${nativeId}`
-    const peers = await run(first, ['remote', 'peers', secondId])
-    expect(JSON.parse(peers.stdout) as unknown).toEqual({ peers: [{ name: 'reviewer', address: secondAddress }] })
+    expect((await run(first, ['allow', `contact:${contactId}`])).exitCode).toBe(0)
+    expect((await run(second, ['allow', `contact:${contactId}`], nativeId)).exitCode).toBe(0)
+    const secondAddress = `remote:${contactId}/codex:${nativeId}`
+    const firstAddress = `remote:${contactId}/codex:${nativeId}`
+    const peers = await run(first, ['remote', 'peers', contactId])
+    expect(JSON.parse(peers.stdout) as unknown).toEqual({ peers: [{ name: 'private', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }, { name: 'reviewer', address: secondAddress, relation: 'peer' }] })
     expect((await run(second, ['join', '--name', 'renamed'], nativeId)).exitCode).toBe(0)
     expect((await run(second, ['join', '--name', 'reviewer'], hiddenId)).exitCode).toBe(0)
-    const renamedPeers = await run(first, ['remote', 'peers', secondId])
-    expect(JSON.parse(renamedPeers.stdout) as unknown).toEqual({ peers: [{ name: 'renamed', address: secondAddress }] })
+    const renamedPeers = await run(first, ['remote', 'peers', contactId])
+    expect(JSON.parse(renamedPeers.stdout) as unknown).toEqual({ peers: [{ name: 'renamed', address: secondAddress, relation: 'peer' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
 
     const text = 'λ 🦉 "quotes" \'single\' `backticks` $(not-a-command) $HOME\nsecond line — keep Unicode and punctuation'
     const sent = await run(first, ['send', secondAddress, text], nativeId)
@@ -79,11 +81,11 @@ test('CLI invitation, selected peers, round trip, unshare, and revocation across
     expect(returned[4]).toContain(`From: ${secondAddress}\n`)
     expect(returned[4]).toContain(`In reply to: ${field(sent, 'messageId')}\n`)
 
-    expect((await run(second, ['remote', 'unshare', firstId, `codex:${nativeId}`])).exitCode).toBe(0)
+    expect((await run(second, ['disallow', `contact:${contactId}`])).exitCode).toBe(0)
     expect((await run(first, ['send', secondAddress, 'Should be refused.'], nativeId)).exitCode).toBe(1)
     expect(await captured(second)).toEqual(received)
-    expect((await run(second, ['remote', 'share', firstId, `codex:${nativeId}`])).exitCode).toBe(0)
-    expect((await run(first, ['remote', 'revoke', secondId])).exitCode).toBe(0)
+    expect((await run(second, ['allow', `contact:${contactId}`])).exitCode).toBe(0)
+    expect((await run(first, ['remote', 'revoke', contactId])).exitCode).toBe(0)
     expect((await run(first, ['send', secondAddress, 'Revoked forward.'], nativeId)).exitCode).toBe(1)
     expect((await run(second, ['send', firstAddress, 'Revoked reverse.'], nativeId)).exitCode).toBe(1)
     expect(await captured(second)).toEqual(received)
@@ -100,7 +102,7 @@ type CommandResult = { exitCode: number; stdout: string; stderr: string }
 
 async function run(home: string, args: string[], threadId?: string): Promise<CommandResult> {
   const child = Bun.spawn([process.execPath, join(project, 'src/cli.ts'), ...args], {
-    cwd: join(home, 'project'),
+    cwd: join(home, threadId === hiddenId ? 'private-project' : 'project'),
     env: {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
       UNDERCURRENT_HOME: home,

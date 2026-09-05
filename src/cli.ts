@@ -10,10 +10,10 @@ import { createMessage, sendMessage } from './send.ts'
 import type { SendOutcome } from './send.ts'
 import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
 import { formatRemoteAddress, parseRemoteAddress } from './remote-protocol.ts'
-import { sendRemote } from './remote.ts'
+import { remoteContacts, sendRemote } from './remote.ts'
 import { errorText } from './validation.ts'
-import { findProject } from './project.ts'
-import { initializeProject, installIntegration } from './install.ts'
+import { authorizeLocal, editAllow, findProject, formatPrincipal, initializePolicy, parsePrincipal, serializePolicy } from './project.ts'
+import { installIntegration } from './install.ts'
 import { runHook } from './hooks.ts'
 
 type TextSource =
@@ -23,7 +23,9 @@ type TextSource =
 
 type Command =
   | { kind: 'help' }
-  | { kind: 'init' }
+  | { kind: 'init'; global: boolean }
+  | { kind: 'config' }
+  | { kind: 'allow' | 'disallow'; principal: string; global: boolean }
   | { kind: 'install' | 'hook'; provider: Provider }
   | { kind: 'join'; name: string; about: string | null }
   | { kind: 'peers' }
@@ -34,7 +36,10 @@ type Command =
 const help = `Undercurrent — messages between existing agent conversations.
 
 Usage:
-  uc init
+  uc init [--global]
+  uc config
+  uc allow <project:/absolute/path|contact:UUID|all> [--global]
+  uc disallow <project:/absolute/path|contact:UUID|all> [--global]
   uc install <codex|claude>
   uc join --name <label> [--about <short description>]
   uc peers
@@ -49,15 +54,13 @@ Remote (optional):
   uc remote accept <invitation>
   uc remote status
   uc remote contacts
-  uc remote share <contact UUID> [local label|address]
-  uc remote unshare <contact UUID> [local label|address]
   uc remote peers <contact UUID>
   uc remote revoke <contact UUID>
   uc remote bridge
   uc relay [--state <file>] [--host <host>] [--port <port>]
 
-Remote exact addresses: remote:<contact UUID>/<native exact address>.
-Both machines share participating peers explicitly. The receiver bridge must
+Remote exact addresses: remote:<pairing UUID>/<native exact address>.
+Both projects must allow the contact. The receiver bridge must
 be running. No offline storage or automatic message retries. The trusted relay
 operator can read messages. Public relays require HTTPS; loopback permits HTTP.
 
@@ -65,7 +68,9 @@ Exact addresses: codex:<thread UUID> or claude:<session UUID>.
 Use -- before message text that begins with a dash.
 Join in each participating conversation before sending. Rejoin Claude after
 its inbox socket changes. Peer listings show registrations, not live status.
-Project policy lives in .undercurrent.json; absent or off disables participation.
+Global defaults live in UNDERCURRENT_HOME/config.json; .undercurrent.json
+overrides them per project. join controls participation; allow controls messages.
+Joined strangers are discoverable but messages fail without waking them.
 Install lifecycle hooks once per host/project to auto-join on start/resume and
 leave on session end. Idle does not detach a peer. Codex hooks need native review.
 
@@ -98,13 +103,36 @@ async function main(args: string[]): Promise<number> {
   if (command.value.kind === 'remote') return runRemoteCommand(home, command.value.args)
   if (command.value.kind === 'relay') return runRelayCommand(home, command.value.args)
   if (command.value.kind === 'init') {
-    const initialized = await initializeProject(process.cwd())
+    const initialized = await initializePolicy(home, process.cwd(), command.value.global)
     if (!initialized.ok) return fail(initialized)
-    console.log(JSON.stringify({ status: 'configured', projectRoot: initialized.value, config: join(initialized.value, '.undercurrent.json') }))
+    console.log(JSON.stringify({ status: 'configured', config: initialized.value }))
+    return 0
+  }
+  if (command.value.kind === 'config') {
+    const project = await findProject(home, process.cwd())
+    if (!project.ok) return fail(project)
+    console.log(JSON.stringify({ projectRoot: project.value.root, config: serializePolicy(project.value.config) }))
+    return 0
+  }
+  if (command.value.kind === 'allow' || command.value.kind === 'disallow') {
+    const parsed = command.value.principal === 'all' ? { ok: true as const, value: 'all' as const } : parsePrincipal(command.value.principal)
+    if (!parsed.ok) return fail(parsed)
+    const principal = parsed.value
+    if (command.value.kind === 'allow' && principal !== 'all' && principal.kind === 'contact') {
+      const contacts = await remoteContacts(home)
+      if (!contacts.ok) return fail(contacts)
+      if (!contacts.value.some(contact => contact.id === principal.id)) return fail(invalidInput('This contact is not an active pairing.'))
+    }
+    const project = await findProject(home, process.cwd())
+    if (!project.ok) return fail(project)
+    const root = command.value.global ? null : project.value.root
+    const result = await editAllow(home, root, principal, command.value.kind === 'allow')
+    if (!result.ok) return fail(result)
+    console.log(JSON.stringify({ status: command.value.kind === 'allow' ? 'allowed' : 'disallowed', scope: root ?? 'global', principal: principal === 'all' ? 'all' : formatPrincipal(principal) }))
     return 0
   }
   if (command.value.kind === 'install') {
-    const installed = await installIntegration(process.cwd(), command.value.provider)
+    const installed = await installIntegration(home, process.cwd(), command.value.provider)
     if (!installed.ok) return fail(installed)
     console.log(JSON.stringify({ status: 'installed', ...installed.value, next: command.value.provider === 'codex' ? 'Review and trust the project hooks in Codex /hooks, then start or resume a session.' : 'Start or resume a Claude session to load the project hooks.' }))
     return 0
@@ -128,7 +156,15 @@ async function main(args: string[]): Promise<number> {
   if (command.value.kind === 'peers') {
     const peers = await listPeers(home)
     if (!peers.ok) return fail(peers)
-    console.log(JSON.stringify({ peers: peers.value.map(peerOutput) }))
+    const project = await findProject(home, process.cwd())
+    if (!project.ok) return fail(project)
+    const output = []
+    for (const peer of peers.value) {
+      const permitted = await authorizeLocal(home, project.value.root, peer.projectRoot)
+      if (!permitted.ok && permitted.error.kind !== 'not-allowed') return fail(permitted)
+      output.push({ ...peerOutput(peer), relation: permitted.ok ? 'peer' : 'stranger' })
+    }
+    console.log(JSON.stringify({ peers: output }))
     return 0
   }
 
@@ -138,9 +174,8 @@ async function main(args: string[]): Promise<number> {
 
   switch (command.value.kind) {
     case 'join': {
-      const project = await findProject(process.cwd())
+      const project = await findProject(home, process.cwd())
       if (!project.ok) return fail(project)
-      if (project.value === null) return fail(invalidInput('This project has no .undercurrent.json. Run uc init at its root to enable participation.'))
       const peer = await joinPeer(home, { name: command.value.name, about: command.value.about, projectRoot: project.value.root, destination: current.value })
       if (!peer.ok) return fail(peer)
       console.log(JSON.stringify({ status: 'joined', ...peerOutput(peer.value) }))
@@ -177,6 +212,8 @@ async function main(args: string[]): Promise<number> {
       } else {
         const recipient = await resolvePeer(home, command.value.target)
         if (!recipient.ok) return fail(recipient)
+        const permitted = await authorizeLocal(home, attached.value.projectRoot, recipient.value.projectRoot)
+        if (!permitted.ok) return fail(permitted)
         const codexBin = process.env['UNDERCURRENT_CODEX_BIN']
         if (recipient.value.destination.provider === 'codex' && codexBin !== undefined && codexBin.trim() === '') {
           return fail(invalidInput('UNDERCURRENT_CODEX_BIN must be a nonempty executable path.'))
@@ -220,6 +257,15 @@ function parseCommand(args: string[]): Result<Command> {
       return { ok: true, value: { kind: command, provider } }
     }
     case 'init':
+      if (args.length !== 1 && !(args.length === 2 && args[1] === '--global')) return invalidInput('Usage: uc init [--global].')
+      return { ok: true, value: { kind: 'init', global: args[1] === '--global' } }
+    case 'allow':
+    case 'disallow': {
+      const principal = args[1]
+      if (principal === undefined || (args.length !== 2 && !(args.length === 3 && args[2] === '--global'))) return invalidInput(`Usage: uc ${command} <project:/absolute/path|contact:UUID|all> [--global].`)
+      return { ok: true, value: { kind: command, principal, global: args[2] === '--global' } }
+    }
+    case 'config':
     case 'peers':
     case 'leave':
       if (args.length !== 1) return invalidInput(`Usage: uc ${command}.`)

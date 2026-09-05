@@ -5,20 +5,20 @@ import { hasKeys, isObject, isToken, isUuid } from './validation.ts'
 
 export type RemoteIdentity = { origin: string; machineId: string; ownerToken: string }
 export type RemoteContact = { id: string }
-export type RemoteAddress = { provider: 'remote'; machineId: string; peer: Address }
+export type RemoteAddress = { provider: 'remote'; contactId: string; peer: Address }
 export type RemoteMessage = { id: string; from: Address; text: string; inReplyTo: string | null }
 export type Delivery =
   | { type: 'send'; requestId: string; contactId: string; to: Address; message: RemoteMessage }
   | { type: 'peers'; requestId: string; contactId: string }
-export type RemoteResult = SendOutcome | { status: 'peers'; peers: Array<{ name: string; address: Address }> }
+export type RemoteResult = SendOutcome | { status: 'peers'; peers: Array<{ name: string; address: Address; allowed: boolean }> }
 export type Receipt = { type: 'receipt'; requestId: string; result: RemoteResult }
 export type Invitation = { origin: string; code: string }
 
 export const maxFrameBytes = 256 * 1024
 const controlPattern = /\p{Cc}/u
 
-export function parseMachineId(raw: unknown): Result<string> {
-  if (!isUuid(raw)) return invalid('A machine ID must be a UUID.')
+export function parseRemoteId(raw: unknown): Result<string> {
+  if (!isUuid(raw)) return invalid('A remote identity must be a UUID.')
   return { ok: true, value: raw.toLowerCase() }
 }
 
@@ -60,9 +60,9 @@ export function parseContacts(raw: unknown): Result<RemoteContact[]> {
   for (const item of raw['contacts']) {
     if (!isObject(item) || !hasKeys(item, ['id'])) return invalid('Each contact must contain exactly id.')
     const id = item['id']
-    if (!isUuid(id)) return invalid('Each contact needs a machine UUID.')
+    if (!isUuid(id)) return invalid('Each contact needs a pairing UUID.')
     const normalized = id.toLowerCase()
-    if (contacts.some(contact => contact.id === normalized)) return invalid('Remote contacts cannot repeat a machine UUID.')
+    if (contacts.some(contact => contact.id === normalized)) return invalid('Remote contacts cannot repeat a pairing UUID.')
     contacts.push({ id: normalized })
   }
   return { ok: true, value: contacts }
@@ -70,17 +70,17 @@ export function parseContacts(raw: unknown): Result<RemoteContact[]> {
 
 export function parseRemoteAddress(text: string): Result<RemoteAddress> {
   const slash = text.indexOf('/')
-  const machineId = text.slice('remote:'.length, slash)
-  if (!text.startsWith('remote:') || slash < 0 || !isUuid(machineId)) {
-    return invalid('Use remote:<machine UUID>/<codex:thread UUID|claude:session UUID>.')
+  const contactId = text.slice('remote:'.length, slash)
+  if (!text.startsWith('remote:') || slash < 0 || !isUuid(contactId)) {
+    return invalid('Use remote:<pairing UUID>/<codex:thread UUID|claude:session UUID>.')
   }
   const peer = parseAddress(text.slice(slash + 1))
   if (!peer.ok) return peer
-  return { ok: true, value: { provider: 'remote', machineId: machineId.toLowerCase(), peer: peer.value } }
+  return { ok: true, value: { provider: 'remote', contactId: contactId.toLowerCase(), peer: peer.value } }
 }
 
 export function formatRemoteAddress(value: RemoteAddress): string {
-  return `remote:${value.machineId}/${formatAddress(value.peer)}`
+  return `remote:${value.contactId}/${formatAddress(value.peer)}`
 }
 
 export function encodeInvitation(value: Invitation): string {
@@ -144,9 +144,9 @@ export function parseRemoteResult(raw: unknown): Result<RemoteResult> {
       if (!hasKeys(raw, ['status', 'peers']) || !Array.isArray(items) || items.length > 256) {
         return invalid('A peers result needs exactly status and a peers array with at most 256 entries.')
       }
-      const peers: Array<{ name: string; address: Address }> = []
+      const peers: Array<{ name: string; address: Address; allowed: boolean }> = []
       for (const item of items) {
-        if (!isObject(item) || !hasKeys(item, ['name', 'address'])) return invalid('Each remote peer needs exactly name and address.')
+        if (!isObject(item) || !hasKeys(item, ['name', 'address', 'allowed']) || typeof item['allowed'] !== 'boolean') return invalid('Each remote peer needs exactly name, address, and an allowed boolean.')
         const name = item['name']
         if (typeof name !== 'string' || name.trim() === '' || name !== name.trim() || name.includes(':')
           || controlPattern.test(name) || Buffer.byteLength(name, 'utf8') > 256) {
@@ -154,7 +154,7 @@ export function parseRemoteResult(raw: unknown): Result<RemoteResult> {
         }
         const address = parseNativeAddress(item['address'])
         if (!address.ok) return address
-        peers.push({ name, address: address.value })
+        peers.push({ name, address: address.value, allowed: item['allowed'] })
       }
       return { ok: true, value: { status: 'peers', peers } }
     }

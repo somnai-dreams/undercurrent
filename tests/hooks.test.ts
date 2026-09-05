@@ -2,8 +2,9 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { initializePolicy } from '../src/project.ts'
 import { runHook } from '../src/hooks.ts'
-import { initializeProject, installIntegration } from '../src/install.ts'
+import { installIntegration } from '../src/install.ts'
 import { joinPeer, listPeers, listRegistrations } from '../src/registry.ts'
 import { isObject } from '../src/validation.ts'
 
@@ -29,9 +30,9 @@ test('init is explicit, local-only, and preserves an existing manual policy', as
   const { root, home } = await fixture()
   expect(await runHook(home, 'codex', event(root), {})).toEqual({ ok: true, value: null })
   expect(await listPeers(home)).toEqual({ ok: true, value: [] })
-  expect(await initializeProject(root)).toEqual({ ok: true, value: root })
-  await writeFile(join(root, '.undercurrent.json'), JSON.stringify({ join: 'manual', share: [] }))
-  expect((await initializeProject(root)).ok).toBeTrue()
+  expect(await initializePolicy(home, root, false)).toEqual({ ok: true, value: join(root, '.undercurrent.json') })
+  await writeFile(join(root, '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
+  expect((await initializePolicy(home, root, false)).ok).toBeTrue()
   const manual = await runHook(home, 'codex', event(root), {})
   expect(manual.ok && manual.value).toContain('manual')
   expect(await listPeers(home)).toEqual({ ok: true, value: [] })
@@ -39,7 +40,7 @@ test('init is explicit, local-only, and preserves an existing manual policy', as
 
 test('resume refreshes Claude socket and preserves descriptions; only session end detaches its exact peer', async () => {
   const { root, home } = await fixture()
-  expect((await initializeProject(root)).ok).toBeTrue()
+  expect((await initializePolicy(home, root, false)).ok).toBeTrue()
   expect((await joinPeer(home, { name: 'reviewer', about: 'Reviewing transport', projectRoot: root, destination: { provider: 'claude', sessionId: first, socketPath: '/tmp/old.sock' } })).ok).toBeTrue()
   expect((await runHook(home, 'codex', event(root, second), {})).ok).toBeTrue()
   const resumed = await runHook(home, 'claude', event(root), { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/new.sock' })
@@ -57,7 +58,7 @@ test('resume refreshes Claude socket and preserves descriptions; only session en
 
 test('malformed identity, conflicting environment, absent Claude socket and broken policy cannot enroll', async () => {
   const { root, home } = await fixture()
-  expect((await initializeProject(root)).ok).toBeTrue()
+  expect((await initializePolicy(home, root, false)).ok).toBeTrue()
   expect((await runHook(home, 'codex', event(root, '../bad'), {})).ok).toBeFalse()
   expect((await runHook(home, 'codex', event(root), { CODEX_THREAD_ID: second })).ok).toBeFalse()
   expect((await runHook(home, 'claude', event(root), {})).ok).toBeFalse()
@@ -68,23 +69,23 @@ test('malformed identity, conflicting environment, absent Claude socket and brok
 
 test('disabling policy removes this registration at next startup and never registers a fallback project', async () => {
   const { root, home } = await fixture()
-  expect((await initializeProject(root)).ok).toBeTrue()
+  expect((await initializePolicy(home, root, false)).ok).toBeTrue()
   expect((await runHook(home, 'codex', event(root), {})).ok).toBeTrue()
-  await writeFile(join(root, '.undercurrent.json'), JSON.stringify({ join: 'off', share: [] }))
+  await writeFile(join(root, '.undercurrent.json'), JSON.stringify({ join: 'off', allow: [] }))
   expect(await runHook(home, 'codex', event(root), {})).toEqual({ ok: true, value: null })
   expect(await listRegistrations(home)).toEqual({ ok: true, value: [] })
 })
 
 test('project installer preserves other hooks/settings, is repeatable, and its actual command consumes native-shaped events', async () => {
   const { root, home } = await fixture()
-  expect((await initializeProject(root)).ok).toBeTrue()
-  const firstInstall = await installIntegration(root, 'claude')
+  expect((await initializePolicy(home, root, false)).ok).toBeTrue()
+  const firstInstall = await installIntegration(home, root, 'claude')
   if (!firstInstall.ok) throw new Error(firstInstall.error.message)
   const path = firstInstall.value.hooks
   await writeFile(path, JSON.stringify({ permissions: { allow: ['Read'] }, hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo existing' }] }] } }))
-  expect((await installIntegration(root, 'claude')).ok).toBeTrue()
+  expect((await installIntegration(home, root, 'claude')).ok).toBeTrue()
   const once = await readFile(path, 'utf8')
-  expect((await installIntegration(root, 'claude')).ok).toBeTrue()
+  expect((await installIntegration(home, root, 'claude')).ok).toBeTrue()
   expect(await readFile(path, 'utf8')).toBe(once)
   const raw: unknown = JSON.parse(once) as unknown
   expect(raw).toMatchObject({ permissions: { allow: ['Read'] } })
@@ -108,19 +109,19 @@ test('project installer preserves other hooks/settings, is repeatable, and its a
   expect(JSON.parse(stdout) as unknown).toMatchObject({ hookSpecificOutput: { hookEventName: 'SessionStart' } })
   const joined = await listPeers(home)
   expect(joined.ok && joined.value[0]?.destination).toEqual({ provider: 'claude', sessionId: first, socketPath: '/tmp/installed.sock' })
-  expect((await installIntegration(root, 'codex')).ok).toBeTrue()
+  expect((await installIntegration(home, root, 'codex')).ok).toBeTrue()
 })
 
 test('project installation cannot follow native config or nested skill symlinks outside the project', async () => {
   for (const target of ['.claude', '.agents/skills']) {
-    const { root } = await fixture()
+    const { root, home } = await fixture()
     const outside = await fixture()
-    expect((await initializeProject(root)).ok).toBeTrue()
+    expect((await initializePolicy(home, root, false)).ok).toBeTrue()
     const sentinel = join(outside.root, 'settings.local.json')
     await writeFile(sentinel, '{"outside":true}')
     if (target === '.agents/skills') await mkdir(join(root, '.agents'))
     await symlink(outside.root, join(root, target))
-    const installed = await installIntegration(root, target === '.claude' ? 'claude' : 'codex')
+    const installed = await installIntegration(home, root, target === '.claude' ? 'claude' : 'codex')
     expect(installed.ok).toBeFalse()
     expect(await readFile(sentinel, 'utf8')).toBe('{"outside":true}')
     expect(await Bun.file(join(outside.root, 'undercurrent', 'SKILL.md')).exists()).toBeFalse()

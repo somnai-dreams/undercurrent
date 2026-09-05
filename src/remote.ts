@@ -2,11 +2,11 @@ import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { addressOf, formatAddress, parseNativeAddress } from './data.ts'
 import type { Address, Failure, Registration, Result } from './data.ts'
-import { listPeers, listRegistrations, resolvePeer } from './registry.ts'
-import { editProjectShare, projectAllows, readProject, removeProjectContact } from './project.ts'
+import { listPeers, resolvePeer } from './registry.ts'
+import { projectAllows, readProject } from './project.ts'
 import {
   decodeInvitation, encodeInvitation, maxFrameBytes, parseContacts, parseDelivery,
-  parseIdentity, parseMachineId, parseRemoteResult, validateOrigin,
+  parseIdentity, parseRemoteId, parseRemoteResult, validateOrigin,
 } from './remote-protocol.ts'
 import type { Delivery, RemoteAddress, RemoteContact, RemoteIdentity, RemoteResult } from './remote-protocol.ts'
 import { sendMessage } from './send.ts'
@@ -21,7 +21,7 @@ export type Bridge = {
 }
 export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped'
 
-type RemotePeer = { name: string; address: Address }
+type RemotePeer = { name: string; address: Address; allowed: boolean }
 type HttpResult =
   | { ok: true; status: number; value: unknown }
   | { ok: false; status: 'failed' | 'uncertain'; error: string }
@@ -54,7 +54,7 @@ export async function acceptInvitation(home: string, invitation: string): Promis
     const response = await requestJson(parsed.value.origin, '/accept', 'POST', null, JSON.stringify({ code: parsed.value.code }))
     if (!response.ok || response.status !== 200) return setupFailure(response)
     const identity = parseEnrolledIdentity(parsed.value.origin, response.value)
-    const contactId = parseMachineId(isObject(response.value) ? response.value['contactId'] : undefined)
+    const contactId = parseRemoteId(isObject(response.value) ? response.value['contactId'] : undefined)
     if (!identity.ok || !contactId.ok) return fail('Invitation acceptance returned an invalid receipt and may have consumed the invitation. Obtain a replacement; no retry was made.')
     const saved = await saveNewIdentity(home, identity.value)
     if (!saved.ok) return saved
@@ -82,55 +82,19 @@ export async function remoteContacts(home: string): Promise<Result<RemoteContact
   return parseContacts(response.value)
 }
 
-export async function sharePeer(home: string, contactId: string, address: Address): Promise<Result<void>> {
-  const id = parseMachineId(contactId)
-  if (!id.ok) return id
-  const parsed = parseNativeAddress(address)
-  if (!parsed.ok) return parsed
-  const contacts = await remoteContacts(home)
-  if (!contacts.ok) return contacts
-  if (!contacts.value.some(contact => contact.id === id.value)) return fail('This machine has no active pairing with that contact.', 'not-found')
-  const registration = await resolvePeer(home, formatAddress(parsed.value))
-  if (!registration.ok) return registration
-  return editProjectShare(registration.value.projectRoot, id.value, parsed.value, true)
-}
-
-export async function unsharePeer(home: string, contactId: string, address: Address): Promise<Result<void>> {
-  const contact = parseMachineId(contactId)
-  if (!contact.ok) return contact
-  const peer = parseNativeAddress(address)
-  if (!peer.ok) return peer
-  const registrations = await listRegistrations(home)
-  if (!registrations.ok) return registrations
-  const registration = registrations.value.find(item => formatAddress(addressOf(item.destination)) === formatAddress(peer.value))
-  if (registration === undefined) return fail('This conversation is not registered; its project cannot be located.', 'not-found')
-  return editProjectShare(registration.projectRoot, contact.value, peer.value, false)
-}
-
 export async function revokeContact(home: string, contactId: string): Promise<Result<void>> {
-  const contact = parseMachineId(contactId)
+  const contact = parseRemoteId(contactId)
   if (!contact.ok) return contact
   const identity = await loadRemoteIdentity(home)
   if (!identity.ok) return identity
-  // Remove project admission first, even if the relay becomes unreachable afterward.
-  const registrations = await listRegistrations(home)
-  if (!registrations.ok) return registrations
-  const roots: string[] = []
-  for (const registration of registrations.value) {
-    if (!roots.includes(registration.projectRoot)) roots.push(registration.projectRoot)
-  }
-  for (const root of roots) {
-    const removed = await removeProjectContact(root, contact.value)
-    if (!removed.ok) return fail(`Cannot remove project sharing rules: ${removed.error.message} Relay revocation was not attempted.`)
-  }
   const response = await requestJson(identity.value.origin, '/revoke', 'POST', identity.value.ownerToken, JSON.stringify({ contactId: contact.value }))
-  if (!response.ok || response.status !== 200) return fail('Local sharing was removed. Relay revocation is unconfirmed; no retry was made.')
-  if (!isObject(response.value) || response.value['status'] !== 'revoked') return fail('Local sharing was removed, but the relay returned an invalid revocation receipt.')
+  if (!response.ok || response.status !== 200) return fail('Relay revocation is unconfirmed; no retry was made.')
+  if (!isObject(response.value) || response.value['status'] !== 'revoked') return fail('Relay returned an invalid revocation receipt.')
   return { ok: true, value: undefined }
 }
 
 export async function remotePeers(home: string, contactId: string): Promise<Result<RemotePeer[]>> {
-  const id = parseMachineId(contactId)
+  const id = parseRemoteId(contactId)
   if (!id.ok) return id
   const identity = await loadRemoteIdentity(home)
   if (!identity.ok) return identity
@@ -150,15 +114,15 @@ export async function sendRemote(home: string, to: RemoteAddress, message: Messa
   if (message.from.provider === 'remote') return { status: 'failed', error: 'Remote messages cannot be forwarded as another contact. Send from the current local conversation.' }
   const target = parseNativeAddress(to.peer)
   if (!target.ok) return { status: 'failed', error: target.error.message }
-  const contactId = parseMachineId(to.machineId)
+  const contactId = parseRemoteId(to.contactId)
   if (!contactId.ok) return { status: 'failed', error: contactId.error.message }
   const identity = await loadRemoteIdentity(home)
   if (!identity.ok) return { status: 'failed', error: identity.error.message }
   const source = await resolvePeer(home, formatAddress(message.from))
   if (!source.ok) return { status: 'failed', error: source.error.message }
-  const shared = await projectShares(source.value, contactId.value)
+  const shared = await projectShares(home, source.value, contactId.value)
   if (!shared.ok) return { status: 'failed', error: shared.error.message }
-  if (!shared.value) return { status: 'failed', error: `Share this conversation first with uc remote share ${contactId.value} ${formatAddress(message.from)}.` }
+  if (!shared.value) return { status: 'failed', error: `This project does not allow this contact. Its owner can run uc allow contact:${contactId.value} from ${source.value.projectRoot}.` }
   const headers: Record<string, string> = {
     'content-type': 'text/plain; charset=utf-8',
     'x-from': formatAddress(message.from),
@@ -285,9 +249,9 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
       const visible: RemotePeer[] = []
       for (const peer of peers.value) {
         const address = addressOf(peer.destination)
-        const shared = await projectShares(peer, delivery.contactId)
+        const shared = await projectShares(home, peer, delivery.contactId)
         if (!shared.ok) return { status: 'failed', error: shared.error.message }
-        if (shared.value) visible.push({ name: peer.name, address })
+        visible.push({ name: peer.name, address, allowed: shared.value })
       }
       const result = parseRemoteResult({ status: 'peers', peers: visible })
       return result.ok ? result.value : { status: 'failed', error: 'Shared peer names or count exceed the remote discovery limits.' }
@@ -295,21 +259,21 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
     case 'send': {
       const peer = await resolvePeer(home, formatAddress(delivery.to))
       if (!peer.ok) return { status: 'failed', error: 'The requested conversation is not registered on this machine.' }
-      const shared = await projectShares(peer.value, delivery.contactId)
+      const shared = await projectShares(home, peer.value, delivery.contactId)
       if (!shared.ok) return { status: 'failed', error: shared.error.message }
-      if (!shared.value) return { status: 'failed', error: 'This conversation is not shared with your contact.' }
+      if (!shared.value) return { status: 'failed', error: `This project does not allow your contact. Its owner can run uc allow contact:${delivery.contactId}.` }
       return sendMessage(peer.value.destination, {
         ...delivery.message,
-        from: { provider: 'remote', machineId: delivery.contactId, peer: delivery.message.from },
+        from: { provider: 'remote', contactId: delivery.contactId, peer: delivery.message.from },
       }, options)
     }
   }
 }
 
-async function projectShares(registration: Registration, contactId: string): Promise<Result<boolean>> {
-  const config = await readProject(registration.projectRoot)
+async function projectShares(home: string, registration: Registration, contactId: string): Promise<Result<boolean>> {
+  const config = await readProject(home, registration.projectRoot)
   if (!config.ok) return config
-  return { ok: true, value: config.value !== null && projectAllows(config.value, addressOf(registration.destination), contactId) }
+  return { ok: true, value: projectAllows(config.value, { kind: 'contact', id: contactId }) }
 }
 
 async function withSetup<T>(home: string, run: () => Promise<Result<T>>): Promise<Result<T>> {

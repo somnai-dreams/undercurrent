@@ -22,9 +22,9 @@ export async function runHook(home: string, provider: Provider, raw: unknown, en
     return left.ok ? { ok: true, value: null } : left
   }
 
-  const project = await findProject(event.cwd)
+  const project = await findProject(home, event.cwd)
   if (!project.ok) return project
-  if (project.value === null || project.value.config.join === 'off') {
+  if (project.value.config.join === 'off') {
     const left = await leavePeer(home, address.value)
     return left.ok ? { ok: true, value: null } : left
   }
@@ -37,7 +37,7 @@ export async function runHook(home: string, provider: Provider, raw: unknown, en
     case 'codex': destination = parseDestination({ provider, threadId: event.sessionId }); break
     case 'claude': destination = parseDestination({ provider, sessionId: event.sessionId, socketPath: env['CLAUDE_CODE_MESSAGING_SOCKET'] }); break
   }
-  if (!destination.ok) return destination
+  if (!destination.ok) return invalid(`Native messaging socket unavailable or invalid: ${destination.error.message} Run uc join --name <label> from the conversation when its tools are available.`)
   const registrations = await listRegistrations(home)
   if (!registrations.ok) return registrations
   const own = registrations.value.find(peer => formatAddress(addressOf(peer.destination)) === formatAddress(address.value))

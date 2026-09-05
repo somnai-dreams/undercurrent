@@ -4,6 +4,7 @@ node_modules/
 .undercurrent.json
 .undercurrent.json.lock
 .undercurrent-*.tmp
+.undercurrent.json.*.tmp
 .codex/hooks.json
 .claude/settings.local.json
 .agents/skills/undercurrent/

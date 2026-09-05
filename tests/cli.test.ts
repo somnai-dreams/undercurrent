@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -18,6 +18,38 @@ afterEach(async () => {
 })
 
 describe('CLI', () => {
+  test('strangers are visible, one-sided permission cannot send, and allow only edits the caller project', async () => {
+    const fixture = await makeFixture()
+    const other = join(fixture.home, 'other-project')
+    await mkdir(other)
+    const policy = join(other, '.undercurrent.json')
+    await writeFile(policy, JSON.stringify({ join: 'manual', allow: [] }))
+    const unchanged = await readFile(policy, 'utf8')
+    expect((await run(fixture, { CODEX_THREAD_ID: sender }, ['join', '--name', 'sender'])).exitCode).toBe(0)
+    expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'stranger'], { cwd: other })).exitCode).toBe(0)
+    expect(output(await run(fixture, {}, ['peers']))).toMatchObject({ peers: [{ name: 'sender', relation: 'peer' }, { name: 'stranger', relation: 'stranger' }] })
+    expect((await run(fixture, { CODEX_THREAD_ID: sender }, ['send', 'stranger', 'blocked'])).exitCode).toBe(1)
+    expect((await run(fixture, {}, ['allow', `project:${other}`])).exitCode).toBe(0)
+    expect(await readFile(policy, 'utf8')).toBe(unchanged)
+    const denied = await run(fixture, { CODEX_THREAD_ID: sender }, ['send', 'stranger', 'still blocked'])
+    expect(output(denied)).toMatchObject({ status: 'failed', kind: 'not-allowed' })
+    expect(await Bun.file(fixture.capture).exists()).toBeFalse()
+    expect((await run(fixture, {}, ['allow', `project:${fixture.home}`], { cwd: other })).exitCode).toBe(0)
+    expect((await run(fixture, { CODEX_THREAD_ID: sender }, ['send', 'stranger', 'now permitted'])).exitCode).toBe(0)
+    expect(output(await run(fixture, {}, ['peers']))).toMatchObject({ peers: [{ name: 'sender', relation: 'peer' }, { name: 'stranger', relation: 'peer' }] })
+  })
+
+  test('global policy commands preserve the current project override and report effective settings', async () => {
+    const fixture = await makeFixture()
+    const before = await readFile(join(fixture.home, '.undercurrent.json'), 'utf8')
+    expect((await run(fixture, {}, ['init', '--global'])).exitCode).toBe(0)
+    expect((await run(fixture, {}, ['allow', 'all', '--global'])).exitCode).toBe(0)
+    expect(await readFile(join(fixture.home, '.undercurrent.json'), 'utf8')).toBe(before)
+    expect(output(await run(fixture, {}, ['config']))).toEqual({ projectRoot: fixture.home, config: { join: 'auto', allow: [`project:${fixture.home}`] } })
+    expect((await run(fixture, {}, ['disallow', 'all', '--global'])).exitCode).toBe(0)
+    expect(JSON.parse(await readFile(join(fixture.home, 'config.json'), 'utf8')) as unknown).toEqual({ join: 'off', allow: [] })
+  })
+
   test('help and registered peer listing do not require a current session', async () => {
     const fixture = await makeFixture()
     const help = await run(fixture, {}, ['--help'])
@@ -41,14 +73,14 @@ describe('CLI', () => {
     expect(output(joined)).toMatchObject({ status: 'joined', address: `codex:${sender}`, name: 'implementation' })
     expect((await run(fixture, claude, ['join', '--name', 'review'])).exitCode).toBe(0)
     expect(output(await run(fixture, {}, ['peers']))).toEqual({ peers: [
-      { address: `codex:${sender}`, name: 'implementation', about: null, projectRoot: fixture.home, destination: { provider: 'codex', threadId: sender } },
-      { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
+      { address: `codex:${sender}`, name: 'implementation', about: null, projectRoot: fixture.home, relation: 'peer', destination: { provider: 'codex', threadId: sender } },
+      { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, relation: 'peer', destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
     ] })
     const left = await run(fixture, codex, ['leave'])
     expect(left.exitCode).toBe(0)
     expect(output(left)).toEqual({ status: 'left', address: `codex:${sender}` })
     expect(output(await run(fixture, {}, ['peers']))).toEqual({ peers: [
-      { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
+      { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, relation: 'peer', destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
     ] })
   })
 
@@ -156,7 +188,7 @@ describe('CLI', () => {
 
 async function makeFixture(): Promise<Fixture> {
   const home = await realpath(await mkdtemp(join(tmpdir(), 'undercurrent-cli-')))
-  await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'auto', share: [] }))
+  await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'auto', allow: [`project:${home}`] }))
   homes.push(home)
   const executable = join(home, 'fake-codex')
   const capture = join(home, 'native-args.json')
@@ -183,10 +215,10 @@ async function run(
   fixture: Fixture,
   identity: Record<string, string>,
   args: string[],
-  options: { stdin?: string; nativeExitCode?: number } = {},
+  options: { stdin?: string; nativeExitCode?: number; cwd?: string } = {},
 ): Promise<CommandResult> {
   const child = Bun.spawn([process.execPath, join(project, 'src/cli.ts'), ...args], {
-    cwd: fixture.home,
+    cwd: options.cwd ?? fixture.home,
     env: {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
       UNDERCURRENT_HOME: fixture.home,

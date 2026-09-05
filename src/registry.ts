@@ -9,7 +9,7 @@ import { readProject } from './project.ts'
 export async function listPeers(home: string): Promise<Result<Registration[]>> {
   const registrations = await listRegistrations(home)
   if (!registrations.ok) return registrations
-  const checks = await Promise.all(registrations.value.map(enabledProject))
+  const checks = await Promise.all(registrations.value.map(peer => enabledProject(home, peer)))
   const peers: Registration[] = []
   for (let index = 0; index < checks.length; index += 1) {
     const check = checks[index]
@@ -53,7 +53,7 @@ export async function joinPeer(home: string, registration: Registration): Promis
   const parsed = parseRegistration(registration)
   if (!parsed.ok) return parsed
   const peer = parsed.value
-  const enabled = await enabledProject(peer)
+  const enabled = await enabledProject(home, peer)
   if (!enabled.ok) return enabled
   if (!enabled.value) return { ok: false, error: { kind: 'invalid-input', message: 'This project is not participating. Add an enabled .undercurrent.json policy in its canonical root before joining.' } }
   const directory = join(home, 'peers')
@@ -92,7 +92,7 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
     const filename = registrationFilename(parsed.value)
     const registration = await readRegistration(join(home, 'peers', filename), filename)
     if (!registration.ok) return registration
-    const enabled = await enabledProject(registration.value)
+    const enabled = await enabledProject(home, registration.value)
     if (!enabled.ok) return enabled
     return enabled.value ? registration : { ok: false, error: { kind: 'not-found', message: 'This conversation belongs to a project whose participation is off or missing.' } }
   }
@@ -141,15 +141,15 @@ function registrationFilename(address: Address): string {
   return `${formatAddress(address)}.json`
 }
 
-async function enabledProject(registration: Registration): Promise<Result<boolean>> {
+async function enabledProject(home: string, registration: Registration): Promise<Result<boolean>> {
   let canonical: string
   try { canonical = await realpath(registration.projectRoot) } catch (error) {
     return hasErrorCode(error, 'ENOENT') ? { ok: true, value: false } : ioFailure(`Cannot locate project ${registration.projectRoot}`, error)
   }
   if (canonical !== registration.projectRoot) return { ok: false, error: { kind: 'invalid-registration', message: `Registration projectRoot must be canonical: ${canonical}. Rejoin from the intended project.` } }
-  const config = await readProject(canonical)
+  const config = await readProject(home, canonical)
   if (!config.ok) return config
-  return { ok: true, value: config.value !== null && config.value.join !== 'off' }
+  return { ok: true, value: config.value.join !== 'off' }
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

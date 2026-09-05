@@ -102,11 +102,11 @@ describe('peer registry', () => {
     const otherProject = join(home, 'other-project')
     await mkdir(otherProject)
     const policy = join(otherProject, '.undercurrent.json')
-    await writeFile(policy, JSON.stringify({ join: 'auto', share: [] }))
+    await writeFile(policy, JSON.stringify({ join: 'auto', allow: [] }))
     const other = { ...claude, projectRoot: otherProject }
     unwrap(await joinPeer(home, codex))
     unwrap(await joinPeer(home, other))
-    await writeFile(policy, JSON.stringify({ join: 'off', share: [] }))
+    await writeFile(policy, JSON.stringify({ join: 'off', allow: [] }))
     expect(unwrap(await listPeers(home))).toEqual([codex])
     expect(unwrap(await listRegistrations(home))).toHaveLength(2)
     expect(unwrap(await resolvePeer(home, 'review'))).toEqual(codex)
@@ -116,7 +116,7 @@ describe('peer registry', () => {
     await writeFile(policy, '{invalid')
     expect((await listPeers(home)).ok).toBeFalse()
     expect((await resolvePeer(home, formatAddress(addressOf(other.destination)))).ok).toBeFalse()
-    await writeFile(policy, JSON.stringify({ join: 'manual', share: [] }))
+    await writeFile(policy, JSON.stringify({ join: 'manual', allow: [] }))
     expect(unwrap(await listPeers(home))).toHaveLength(2)
   })
 
@@ -130,7 +130,7 @@ describe('peer registry', () => {
     await rm(join(home, '.undercurrent.json'))
     expect((await joinPeer(home, codex)).ok).toBeFalse()
     expect(unwrap(await listRegistrations(home))).toEqual([])
-    await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'off', share: [] }))
+    await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'off', allow: [] }))
     expect((await joinPeer(home, codex)).ok).toBeFalse()
   })
 })
@@ -138,7 +138,7 @@ describe('peer registry', () => {
 async function temporaryHome(): Promise<string> {
   const home = await realpath(await mkdtemp(join(tmpdir(), 'undercurrent-registry-')))
   homes.push(home)
-  await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'manual', share: [] }))
+  await writeFile(join(home, '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
   return home
 }
 

@@ -1,138 +1,116 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { formatAddress } from '../src/data.ts'
-import type { Address, Result } from '../src/data.ts'
-import { editProjectShare, findProject, projectAllows, readProject, removeProjectContact } from '../src/project.ts'
+import type { Result } from '../src/data.ts'
+import { authorizeLocal, editAllow, findProject, initializePolicy, parsePrincipal, projectAllows, readProject } from '../src/project.ts'
 
-const contact = '01a06f6d-bdbd-7822-a985-3337ea851a95'
-const otherContact = '02a06f6d-bdbd-7822-a985-3337ea851a95'
-const codex: Address = { provider: 'codex', threadId: '03a06f6d-bdbd-7822-a985-3337ea851a95' }
-const claude: Address = { provider: 'claude', sessionId: '04a06f6d-bdbd-7822-a985-3337ea851a95' }
-const homes: string[] = []
+const directories: string[] = []
+const contact = { kind: 'contact', id: '11111111-1111-4111-8111-111111111111' } as const
+const other = { kind: 'contact', id: '22222222-2222-4222-8222-222222222222' } as const
+afterEach(async () => { await Promise.all(directories.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+async function fixture() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'uc-policy-')))
+  directories.push(root)
+  const home = join(root, 'state')
+  const a = join(root, 'a')
+  const b = join(root, 'b')
+  await Promise.all([mkdir(home), mkdir(a), mkdir(b)])
+  return { root, home, a, b }
+}
+function unwrap<T>(result: Result<T>): T { if (!result.ok) throw new Error(result.error.message); return result.value }
+async function policy(root: string, raw: unknown) { await writeFile(join(root, '.undercurrent.json'), JSON.stringify(raw)) }
 
-afterEach(async () => {
-  await Promise.all(homes.splice(0).map(path => rm(path, { recursive: true, force: true })))
+test('global defaults apply at each git boundary and project fields override rather than merge lists', async () => {
+  const { home, a, b } = await fixture()
+  await writeFile(join(home, 'config.json'), JSON.stringify({ join: 'auto', allow: 'all' }))
+  await policy(a, { allow: [`contact:${contact.id}`] })
+  expect(unwrap(await readProject(home, a))).toEqual({ join: 'auto', allow: [contact] })
+  await mkdir(join(a, 'nested'))
+  await writeFile(join(a, 'nested', '.git'), 'gitdir: /fixture')
+  expect(unwrap(await findProject(home, join(a, 'nested')))).toEqual({ root: join(a, 'nested'), config: { join: 'auto', allow: 'all' } })
+  await policy(b, { join: 'off' })
+  expect(unwrap(await readProject(home, b))).toEqual({ join: 'off', allow: 'all' })
+  expect(projectAllows(unwrap(await readProject(home, b)), contact)).toBeFalse()
+  await policy(a, { allow: [] })
+  expect(unwrap(await readProject(home, a)).allow).toEqual([])
 })
 
-describe('project participation policy', () => {
-  test('discovery stops at a Git boundary, including worktree .git files', async () => {
-    const home = await temporaryHome()
-    await policy(home, { join: 'auto', share: [] })
-    for (const kind of ['directory', 'file'] as const) {
-      const repository = join(home, kind)
-      const child = join(repository, 'src')
-      await mkdir(child, { recursive: true })
-      if (kind === 'directory') await mkdir(join(repository, '.git'))
-      else await writeFile(join(repository, '.git'), 'gitdir: /fake/worktree/metadata\n')
-      expect(unwrap(await findProject(child))).toBeNull()
-      expect(unwrap(await readProject(repository))).toBeNull()
-      await policy(repository, { join: 'manual', share: [] })
-      expect(unwrap(await findProject(child))).toEqual({ root: repository, config: { join: 'manual', share: [] } })
-      await policy(child, { join: 'off', share: [] })
-      expect(unwrap(await findProject(child))).toEqual({ root: child, config: { join: 'off', share: [] } })
-    }
-  })
-
-  test('symlinked working directories resolve to the actual root and exact reads never inherit', async () => {
-    const home = await temporaryHome()
-    const root = join(home, 'project')
-    const child = join(root, 'nested')
-    await mkdir(child, { recursive: true })
-    await policy(root, { join: 'auto', share: [] })
-    const alias = join(home, 'alias')
-    await symlink(root, alias)
-    expect(unwrap(await findProject(join(alias, 'nested')))).toEqual({ root, config: { join: 'auto', share: [] } })
-    expect(unwrap(await readProject(child))).toBeNull()
-    expect(unwrap(await readProject(join(home, 'missing')))).toBeNull()
-    expect((await editProjectShare(alias, contact, codex, true)).ok).toBeFalse()
-  })
-
-  test('rules normalize identities and scope grants to exact contacts and native conversations', async () => {
-    const home = await temporaryHome()
-    await policy(home, { join: 'manual', share: [{ contact: contact.toUpperCase(), peers: [`codex:${codex.threadId.toUpperCase()}`] }] })
-    const config = unwrap(await readProject(home))
-    if (config === null) throw new Error('Missing fixture policy')
-    expect(config).toEqual({ join: 'manual', share: [{ contact, peers: [codex] }] })
-    expect(projectAllows(config, codex, contact)).toBeTrue()
-    expect(projectAllows(config, claude, contact)).toBeFalse()
-    expect(projectAllows(config, codex, otherContact)).toBeFalse()
-    expect(projectAllows({ join: 'off', share: [{ contact, peers: 'all' }] }, codex, contact)).toBeFalse()
-  })
-
-  test('malformed policy is surfaced rather than inherited or partially accepted', async () => {
-    const home = await temporaryHome()
-    const invalid = [
-      { join: 'auto' },
-      { join: 'sometimes', share: [] },
-      { join: 'auto', share: [], old: true },
-      { join: 'auto', share: [{ contact: '../../outside', peers: 'all' }] },
-      { join: 'auto', share: [{ contact, peers: ['review'] }] },
-      { join: 'auto', share: [{ contact, peers: 'all' }, { contact: contact.toUpperCase(), peers: [] }] },
-      { join: 'auto', share: [{ contact, peers: [formatAddress(codex), formatAddress(codex)] }] },
-    ]
-    for (const value of invalid) {
-      await policy(home, value)
-      expect((await readProject(home)).ok).toBeFalse()
-      const before = await readFile(join(home, '.undercurrent.json'), 'utf8')
-      expect((await editProjectShare(home, contact, claude, true)).ok).toBeFalse()
-      expect(await readFile(join(home, '.undercurrent.json'), 'utf8')).toBe(before)
-    }
-    await writeFile(join(home, '.undercurrent.json'), '{broken')
-    expect((await findProject(home)).ok).toBeFalse()
-  })
-
-  test('edits lock the project and concurrent changes never overwrite an unseen grant', async () => {
-    const home = await temporaryHome()
-    await policy(home, { join: 'manual', share: [] })
-    const lock = join(home, '.undercurrent.json.lock')
-    await writeFile(lock, 'fixture owner')
-    expect((await editProjectShare(home, contact, codex, true)).ok).toBeFalse()
-    expect(await readFile(lock, 'utf8')).toBe('fixture owner')
-    expect(unwrap(await readProject(home))).toEqual({ join: 'manual', share: [] })
-    await rm(lock)
-    const results = await Promise.all([editProjectShare(home, contact, codex, true), editProjectShare(home, contact, claude, true)])
-    expect(results.some(result => result.ok)).toBeTrue()
-    const config = unwrap(await readProject(home))
-    if (config === null) throw new Error('Missing edited policy')
-    expect(projectAllows(config, codex, contact)).toBe(results[0].ok)
-    expect(projectAllows(config, claude, contact)).toBe(results[1].ok)
-    expect(await Bun.file(lock).exists()).toBeFalse()
-    unwrap(await editProjectShare(home, contact.toUpperCase(), codex, true))
-    unwrap(await editProjectShare(home, contact, claude, true))
-    unwrap(await editProjectShare(home, contact, codex, false))
-    expect(unwrap(await readProject(home))).toEqual({ join: 'manual', share: [{ contact, peers: [claude] }] })
-    unwrap(await editProjectShare(home, contact, claude, false))
-    expect(unwrap(await readProject(home))).toEqual({ join: 'manual', share: [] })
-  })
-
-  test('single-peer removal never narrows all implicitly, while revocation clears disabled policy', async () => {
-    const home = await temporaryHome()
-    await policy(home, { join: 'off', share: [{ contact, peers: 'all' }, { contact: otherContact, peers: [formatAddress(claude)] }] })
-    const before = await readFile(join(home, '.undercurrent.json'), 'utf8')
-    expect((await editProjectShare(home, contact, codex, false)).ok).toBeFalse()
-    expect(await readFile(join(home, '.undercurrent.json'), 'utf8')).toBe(before)
-    unwrap(await removeProjectContact(home, contact))
-    expect(unwrap(await readProject(home))).toEqual({ join: 'off', share: [{ contact: otherContact, peers: [claude] }] })
-    await rm(join(home, '.undercurrent.json'))
-    unwrap(await removeProjectContact(home, otherContact))
-    expect(unwrap(await readProject(home))).toBeNull()
-    expect((await editProjectShare(home, contact, codex, true)).ok).toBeFalse()
-  })
+test('absent defaults disable participation and nested repositories never inherit their parent project policy', async () => {
+  const { home, a } = await fixture()
+  expect(unwrap(await readProject(home, a)).join).toBe('off')
+  await policy(a, { join: 'auto', allow: 'all' })
+  const nested = join(a, 'nested')
+  await mkdir(join(nested, '.git'), { recursive: true })
+  expect(unwrap(await findProject(home, nested))).toEqual({ root: nested, config: { join: 'off', allow: [] } })
+  await rm(join(nested, '.git'), { recursive: true })
+  expect(unwrap(await findProject(home, nested)).root).toBe(a)
 })
 
-async function temporaryHome(): Promise<string> {
-  const home = await realpath(await mkdtemp(join(tmpdir(), 'undercurrent-project-')))
-  homes.push(home)
-  return home
-}
+test('configuration follows canonical roots and never silently accepts stale fields or invalid principals', async () => {
+  const { root, home, a } = await fixture()
+  const alias = join(root, 'alias')
+  await symlink(a, alias)
+  await policy(a, { join: 'manual', allow: [] })
+  expect(unwrap(await findProject(home, alias)).root).toBe(a)
+  expect((await readProject(home, alias)).ok).toBeFalse()
+  for (const value of [{ join: 'auto', share: [] }, { allow: ['reviewer'] }, { allow: ['contact:../outside'] }, { join: 'sometimes' }, { allow: [`contact:${contact.id}`, `contact:${contact.id.toUpperCase()}`] }]) {
+    await policy(a, value)
+    expect((await readProject(home, a)).ok).toBeFalse()
+  }
+  expect(parsePrincipal(`contact:${contact.id.toUpperCase()}`)).toEqual({ ok: true, value: contact })
+  await writeFile(join(home, 'config.json'), '{broken')
+  await policy(a, { join: 'auto', allow: 'all' })
+  expect((await readProject(home, a)).ok).toBeFalse()
+})
 
-async function policy(root: string, value: unknown): Promise<void> {
-  await writeFile(join(root, '.undercurrent.json'), JSON.stringify(value))
-}
+test('both local projects must allow each other and changes take effect immediately', async () => {
+  const { home, a, b } = await fixture()
+  await Promise.all([policy(a, { join: 'auto', allow: [] }), policy(b, { join: 'manual', allow: [] })])
+  expect((await authorizeLocal(home, a, b)).ok).toBeFalse()
+  unwrap(await editAllow(home, a, { kind: 'project', root: b }, true))
+  expect((await authorizeLocal(home, a, b)).ok).toBeFalse()
+  unwrap(await editAllow(home, b, { kind: 'project', root: a }, true))
+  expect((await authorizeLocal(home, a, b)).ok).toBeTrue()
+  expect((await authorizeLocal(home, b, a)).ok).toBeTrue()
+  unwrap(await editAllow(home, a, { kind: 'project', root: b }, false))
+  expect((await authorizeLocal(home, b, a)).ok).toBeFalse()
+})
 
-function unwrap<T>(result: Result<T>): T {
-  if (!result.ok) throw new Error(result.error.message)
-  return result.value
-}
+test('project edits preserve inherited join and do not edit another project or global defaults', async () => {
+  const { home, a, b } = await fixture()
+  await writeFile(join(home, 'config.json'), JSON.stringify({ join: 'manual', allow: [`contact:${contact.id}`] }))
+  await policy(b, { join: 'off' })
+  const before = await readFile(join(b, '.undercurrent.json'), 'utf8')
+  unwrap(await editAllow(home, a, other, true))
+  expect(JSON.parse(await readFile(join(a, '.undercurrent.json'), 'utf8')) as unknown).toEqual({ allow: [`contact:${contact.id}`, `contact:${other.id}`] })
+  expect(await readFile(join(b, '.undercurrent.json'), 'utf8')).toBe(before)
+  await writeFile(join(home, 'config.json'), JSON.stringify({ join: 'auto', allow: [] }))
+  expect(unwrap(await readProject(home, a))).toEqual({ join: 'auto', allow: [contact, other] })
+})
+
+test('policy edits are exclusive and cannot silently narrow all or overwrite concurrent changes', async () => {
+  const { home, a } = await fixture()
+  await policy(a, { join: 'auto', allow: [] })
+  const results = await Promise.all([editAllow(home, a, contact, true), editAllow(home, a, other, true)])
+  const config = unwrap(await readProject(home, a))
+  expect(results.some(result => result.ok)).toBeTrue()
+  expect(projectAllows(config, contact)).toBe(results[0].ok)
+  expect(projectAllows(config, other)).toBe(results[1].ok)
+  unwrap(await editAllow(home, a, 'all', true))
+  expect((await editAllow(home, a, contact, false)).ok).toBeFalse()
+  expect(unwrap(await readProject(home, a)).allow).toBe('all')
+  unwrap(await editAllow(home, a, 'all', false))
+  expect(unwrap(await readProject(home, a)).allow).toEqual([])
+})
+
+test('initialization keeps existing policy and gives a new project only its own conversations', async () => {
+  const { home, a } = await fixture()
+  unwrap(await initializePolicy(home, a, false))
+  expect(unwrap(await readProject(home, a))).toEqual({ join: 'auto', allow: [{ kind: 'project', root: a }] })
+  await policy(a, { join: 'manual' })
+  unwrap(await initializePolicy(home, a, false))
+  expect(unwrap(await readProject(home, a)).join).toBe('manual')
+  unwrap(await initializePolicy(home, a, true))
+  expect(JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as unknown).toEqual({ join: 'off', allow: [] })
+})

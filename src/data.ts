@@ -21,7 +21,7 @@ export type Registration = {
 export type Failure = {
   ok: false
   error: {
-    kind: 'invalid-input' | 'invalid-registration' | 'io' | 'not-found' | 'ambiguous'
+    kind: 'invalid-input' | 'invalid-registration' | 'io' | 'not-found' | 'ambiguous' | 'not-allowed'
     message: string
   }
 }

@@ -1,22 +1,19 @@
 import { join, resolve } from 'node:path'
-import { currentDestination } from './current.ts'
-import { addressOf, formatAddress, parseAddress } from './data.ts'
-import type { Address, Failure, Result } from './data.ts'
-import { resolvePeer } from './registry.ts'
+import type { Failure, Result } from './data.ts'
 import { startRelay } from './relay.ts'
 import {
   acceptInvitation, createInvitation, initializeRemote, loadRemoteIdentity,
-  remoteContacts, remotePeers, revokeContact, sharePeer, startBridge, unsharePeer,
+  remoteContacts, remotePeers, revokeContact, startBridge,
 } from './remote.ts'
 import { formatRemoteAddress } from './remote-protocol.ts'
 import { errorText, isToken } from './validation.ts'
+import { findProject, projectAllows } from './project.ts'
 
 type RemoteCommand =
   | { kind: 'init'; origin: string }
   | { kind: 'accept'; invitation: string }
   | { kind: 'invite' | 'contacts' | 'status' | 'bridge' }
   | { kind: 'peers' | 'revoke'; contactId: string }
-  | { kind: 'share' | 'unshare'; contactId: string; target: string | null }
 
 export async function runRemoteCommand(home: string, args: string[]): Promise<number> {
   const parsed = parseRemoteCommand(args)
@@ -58,18 +55,10 @@ export async function runRemoteCommand(home: string, args: string[]): Promise<nu
     case 'peers': {
       const result = await remotePeers(home, command.contactId)
       if (!result.ok) return fail(result)
-      console.log(JSON.stringify({ peers: result.value.map(peer => ({ name: peer.name, address: formatRemoteAddress({ provider: 'remote', machineId: command.contactId, peer: peer.address }) })) }))
-      return 0
-    }
-    case 'share':
-    case 'unshare': {
-      const address = await sharingAddress(home, command.target)
-      if (!address.ok) return fail(address)
-      const result = command.kind === 'share'
-        ? await sharePeer(home, command.contactId, address.value)
-        : await unsharePeer(home, command.contactId, address.value)
-      if (!result.ok) return fail(result)
-      console.log(JSON.stringify({ status: command.kind === 'share' ? 'shared' : 'unshared', contactId: command.contactId, address: formatAddress(address.value) }))
+      const project = await findProject(home, process.cwd())
+      if (!project.ok) return fail(project)
+      const allowed = projectAllows(project.value.config, { kind: 'contact', id: command.contactId.toLowerCase() })
+      console.log(JSON.stringify({ peers: result.value.map(peer => ({ name: peer.name, address: formatRemoteAddress({ provider: 'remote', contactId: command.contactId.toLowerCase(), peer: peer.address }), relation: peer.allowed && allowed ? 'peer' : 'stranger' })) }))
       return 0
     }
     case 'revoke': {
@@ -163,22 +152,8 @@ function parseRemoteCommand(args: string[]): Result<RemoteCommand> {
     case 'revoke':
       if (args.length === 2 && argument !== undefined) return { ok: true, value: { kind: command, contactId: argument } }
       return invalidInput(`Usage: uc remote ${command} <contact UUID>.`)
-    case 'share':
-    case 'unshare':
-      if ((args.length === 2 || args.length === 3) && argument !== undefined) return { ok: true, value: { kind: command, contactId: argument, target: args[2] ?? null } }
-      return invalidInput(`Usage: uc remote ${command} <contact UUID> [local label|address]. Omit the peer to use the current conversation.`)
-    default: return invalidInput('Remote commands: init, accept, invite, status, contacts, peers, share, unshare, revoke, bridge. Run uc --help.')
+    default: return invalidInput('Remote commands: init, accept, invite, status, contacts, peers, revoke, bridge. Run uc --help.')
   }
-}
-
-async function sharingAddress(home: string, target: string | null): Promise<Result<Address>> {
-  if (target === null) {
-    const current = currentDestination()
-    return current.ok ? { ok: true, value: addressOf(current.value) } : current
-  }
-  if (target.includes(':')) return parseAddress(target)
-  const registration = await resolvePeer(home, target)
-  return registration.ok ? { ok: true, value: addressOf(registration.value.destination) } : registration
 }
 
 function adminToken(): Result<string> {

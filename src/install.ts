@@ -1,26 +1,12 @@
-import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import type { Provider, Result } from './data.ts'
 import { findProject } from './project.ts'
 import { errorText, isObject } from './validation.ts'
 
-export async function initializeProject(cwd: string): Promise<Result<string>> {
-  const existing = await findProject(cwd)
-  if (!existing.ok) return existing
-  if (existing.value !== null) return { ok: true, value: existing.value.root }
-  try {
-    const root = await realpath(cwd)
-    await writeFile(join(root, '.undercurrent.json'), `${JSON.stringify({ join: 'auto', share: [] }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-    return { ok: true, value: root }
-  } catch (error) {
-    return failure(`Cannot initialize this project: ${errorText(error)}`)
-  }
-}
-
-export async function installIntegration(cwd: string, provider: Provider): Promise<Result<{ root: string; hooks: string; skill: string }>> {
-  const project = await findProject(cwd)
+export async function installIntegration(home: string, cwd: string, provider: Provider): Promise<Result<{ root: string; hooks: string; skill: string }>> {
+  const project = await findProject(home, cwd)
   if (!project.ok) return project
-  if (project.value === null) return failure('Run uc init in the project root before installing its integration.')
   const root = project.value.root
   const path = provider === 'codex' ? join(root, '.codex', 'hooks.json') : join(root, '.claude', 'settings.local.json')
   const skill = join(root, provider === 'codex' ? '.agents' : '.claude', 'skills', 'undercurrent', 'SKILL.md')
@@ -49,12 +35,22 @@ export async function installIntegration(cwd: string, provider: Provider): Promi
       const groups: unknown = hooks[event] ?? []
       if (!Array.isArray(groups)) return failure(`${path}: ${event} must be an array.`)
       const entries: unknown[] = groups
-      const installed = entries.some(group => {
-        if (!isObject(group) || !Array.isArray(group['hooks'])) return false
+      let installed = false
+      const timeout = event === 'SessionStart' ? 10 : 3
+      const updated: unknown[] = []
+      for (const group of entries) {
+        if (!isObject(group) || !Array.isArray(group['hooks'])) { updated.push(group); continue }
         const handlers: unknown[] = group['hooks']
-        return handlers.some(handler => isObject(handler) && handler['type'] === 'command' && handler['command'] === command)
-      })
-      if (!installed) hooks[event] = [...entries, { hooks: [{ type: 'command', command, timeout: 3 }] }]
+        const next: unknown[] = []
+        for (const handler of handlers) {
+          if (isObject(handler) && handler['type'] === 'command' && handler['command'] === command) {
+            installed = true
+            next.push({ ...handler, timeout })
+          } else next.push(handler)
+        }
+        updated.push({ ...group, hooks: next })
+      }
+      hooks[event] = installed ? updated : [...updated, { hooks: [{ type: 'command', command, timeout }] }]
     }
     const skillText = await readFile(join(import.meta.dir, '..', 'skills', 'undercurrent', 'SKILL.md'), 'utf8')
     await mkdir(dirname(skill), { recursive: true })

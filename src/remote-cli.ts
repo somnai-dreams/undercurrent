@@ -9,6 +9,7 @@ import {
   remoteContacts, remotePeers, revokeContact, sharePeer, startBridge, unsharePeer,
 } from './remote.ts'
 import { formatRemoteAddress } from './remote-protocol.ts'
+import { errorText, isToken } from './validation.ts'
 
 type RemoteCommand =
   | { kind: 'init'; origin: string }
@@ -138,7 +139,7 @@ export async function runRelayCommand(home: string, args: string[]): Promise<num
     process.once('SIGTERM', stop)
     return 0
   } catch (error) {
-    return fail({ ok: false, error: { kind: 'io', message: `Cannot start relay: ${error instanceof Error ? error.message : String(error)}` } })
+    return fail({ ok: false, error: { kind: 'io', message: `Cannot start relay: ${errorText(error)}` } })
   }
 }
 
@@ -182,7 +183,7 @@ async function sharingAddress(home: string, target: string | null): Promise<Resu
 
 function adminToken(): Result<string> {
   const token = process.env['UNDERCURRENT_RELAY_ADMIN']
-  if (token === undefined || !/^[a-f0-9]{64}$/.test(token)) return invalidInput('Set UNDERCURRENT_RELAY_ADMIN to a random 64-character lowercase hex secret, shared only by the relay operator and the first machine setup.')
+  if (!isToken(token)) return invalidInput('Set UNDERCURRENT_RELAY_ADMIN to a random 64-character lowercase hex secret, shared only by the relay operator and the first machine setup.')
   return { ok: true, value: token }
 }
 

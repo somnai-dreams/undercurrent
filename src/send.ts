@@ -4,6 +4,8 @@ import { formatAddress } from './data.ts'
 import type { Address, Destination, Result } from './data.ts'
 import { formatRemoteAddress } from './remote-protocol.ts'
 import type { RemoteAddress } from './remote-protocol.ts'
+import { nativeTimeoutMs } from './delivery-limits.ts'
+import { errorText, isUuid } from './validation.ts'
 
 export type MessageOrigin = Address | RemoteAddress
 
@@ -21,7 +23,6 @@ export type SendOutcome =
 export type SendOptions = { codexCommand?: string[]; timeoutMs?: number }
 
 const maxTextBytes = 32 * 1024
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function createMessage(from: MessageOrigin, text: string, inReplyTo: string | null): Result<Message> {
   if (text.trim() === '' || text.includes('\0')) {
@@ -31,7 +32,7 @@ export function createMessage(from: MessageOrigin, text: string, inReplyTo: stri
   if (Buffer.byteLength(text, 'utf8') > maxTextBytes) {
     return invalidMessage('Message text exceeds 32 KiB. Send a summary and a file path instead.')
   }
-  if (inReplyTo !== null && !uuidPattern.test(inReplyTo)) {
+  if (inReplyTo !== null && !isUuid(inReplyTo)) {
     return invalidMessage('--in-reply-to must be a message UUID.')
   }
   return { ok: true, value: { id: crypto.randomUUID(), from, text, inReplyTo: inReplyTo?.toLowerCase() ?? null } }
@@ -53,7 +54,7 @@ export function envelope(message: Message): string {
 }
 
 export async function sendMessage(destination: Destination, message: Message, options: SendOptions = {}): Promise<SendOutcome> {
-  const timeoutMs = options.timeoutMs ?? 10_000
+  const timeoutMs = options.timeoutMs ?? nativeTimeoutMs
   const text = envelope(message)
   switch (destination.provider) {
     case 'codex':
@@ -184,8 +185,4 @@ function sendClaude(destination: Extract<Destination, { provider: 'claude' }>, t
 
 function invalidMessage(message: string): Result<Message> {
   return { ok: false, error: { kind: 'invalid-input', message } }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

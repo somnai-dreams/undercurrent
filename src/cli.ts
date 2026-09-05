@@ -11,6 +11,7 @@ import type { SendOutcome } from './send.ts'
 import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
 import { formatRemoteAddress, parseRemoteAddress } from './remote-protocol.ts'
 import { sendRemote } from './remote.ts'
+import { errorText } from './validation.ts'
 
 type TextSource =
   | { kind: 'text'; text: string }
@@ -269,10 +270,6 @@ function invalidInput(message: string): Failure {
 function fail(result: Failure): number {
   console.log(JSON.stringify({ status: 'failed', kind: result.error.kind, error: result.error.message }))
   return 1
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }
 
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2))

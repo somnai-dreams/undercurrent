@@ -1,9 +1,10 @@
-import { formatAddress, parseAddress } from './data.ts'
+import { formatAddress, parseAddress, parseNativeAddress } from './data.ts'
 import type { Address, Failure, Result } from './data.ts'
 import type { SendOutcome } from './send.ts'
+import { hasKeys, isObject, isToken, isUuid } from './validation.ts'
 
 export type RemoteIdentity = { origin: string; machineId: string; ownerToken: string }
-export type RemoteContact = { id: string; sendToken: string }
+export type RemoteContact = { id: string }
 export type RemoteAddress = { provider: 'remote'; machineId: string; peer: Address }
 export type RemoteMessage = { id: string; from: Address; text: string; inReplyTo: string | null }
 export type Delivery =
@@ -14,8 +15,6 @@ export type Receipt = { type: 'receipt'; requestId: string; result: RemoteResult
 export type Invitation = { origin: string; code: string }
 
 export const maxFrameBytes = 256 * 1024
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const tokenPattern = /^[0-9a-f]{64}$/
 const controlPattern = /\p{Cc}/u
 
 export function parseMachineId(raw: unknown): Result<string> {
@@ -59,34 +58,14 @@ export function parseContacts(raw: unknown): Result<RemoteContact[]> {
   }
   const contacts: RemoteContact[] = []
   for (const item of raw['contacts']) {
-    if (!isObject(item) || !hasKeys(item, ['id', 'sendToken'])) return invalid('Each contact must contain exactly id and sendToken.')
+    if (!isObject(item) || !hasKeys(item, ['id'])) return invalid('Each contact must contain exactly id.')
     const id = item['id']
-    const sendToken = item['sendToken']
-    if (!isUuid(id) || !isToken(sendToken)) return invalid('Each contact needs a machine UUID and a 64-character lowercase hexadecimal send token.')
+    if (!isUuid(id)) return invalid('Each contact needs a machine UUID.')
     const normalized = id.toLowerCase()
     if (contacts.some(contact => contact.id === normalized)) return invalid('Remote contacts cannot repeat a machine UUID.')
-    contacts.push({ id: normalized, sendToken })
+    contacts.push({ id: normalized })
   }
   return { ok: true, value: contacts }
-}
-
-export function parseNativeAddress(raw: unknown): Result<Address> {
-  if (!isObject(raw)) return invalid('A native address must be an object.')
-  switch (raw['provider']) {
-    case 'codex': {
-      if (!hasKeys(raw, ['provider', 'threadId']) || !isUuid(raw['threadId'])) {
-        return invalid('A Codex address must contain exactly provider and a threadId UUID.')
-      }
-      return { ok: true, value: { provider: 'codex', threadId: raw['threadId'].toLowerCase() } }
-    }
-    case 'claude': {
-      if (!hasKeys(raw, ['provider', 'sessionId']) || !isUuid(raw['sessionId'])) {
-        return invalid('A Claude address must contain exactly provider and a sessionId UUID.')
-      }
-      return { ok: true, value: { provider: 'claude', sessionId: raw['sessionId'].toLowerCase() } }
-    }
-    default: return invalid('A native address provider must be codex or claude.')
-  }
 }
 
 export function parseRemoteAddress(text: string): Result<RemoteAddress> {
@@ -206,23 +185,6 @@ function parseRemoteMessage(raw: unknown): Result<RemoteMessage> {
   const from = parseNativeAddress(raw['from'])
   if (!from.ok) return from
   return { ok: true, value: { id: id.toLowerCase(), from: from.value, text, inReplyTo: inReplyTo === null ? null : inReplyTo.toLowerCase() } }
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function hasKeys(value: Record<string, unknown>, expected: string[]): boolean {
-  const keys = Object.keys(value)
-  return keys.length === expected.length && keys.every(key => expected.includes(key))
-}
-
-function isUuid(value: unknown): value is string {
-  return typeof value === 'string' && uuidPattern.test(value)
-}
-
-function isToken(value: unknown): value is string {
-  return typeof value === 'string' && tokenPattern.test(value)
 }
 
 function invalid(message: string): Failure {

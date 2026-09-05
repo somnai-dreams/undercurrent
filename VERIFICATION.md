@@ -4,7 +4,7 @@
 
 ## Automated checks
 
-`bun run check` passes strict TypeScript 7, type-aware lint, and 44 tests (407 assertions), including the remote prototype checks below. The original 28 local tests cover exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
+`bun run check` passes strict TypeScript 7, type-aware lint, and 47 tests (417 assertions), including the remote prototype checks below. The original 28 local tests cover exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 
 A review found that waiting for a Codex wrapper's output streams could exceed the submission timeout when a descendant kept the streams open. The adapter now waits only for process exit, ignores unused output, and terminates its own process group on timeout. A wrapper-and-descendant regression fixture verifies bounded return and one invocation.
 
@@ -47,7 +47,11 @@ Relay fixtures cover concurrent single-use redemption, credential survival acros
 
 Bun 1.3.14 has a shutdown bookkeeping issue reproduced without Undercurrent imports: after replacing and closing a WebSocket, `server.stop(true)` can return a promise that never resolves even though the sockets are closed, new connections are refused, and the standalone process exits naturally. Replacement fixtures invoke force-stop without awaiting that promise. The relay itself has no workaround state or retry for this runtime issue. A replaced Undercurrent bridge stops instead of reconnecting and competing with its replacement.
 
-Read-only review request `fc6d20ff-3aa1-44e7-bc50-ea2058c918de` was submitted through the existing local courier to the connected Claude reviewer. Its response has not yet been consumed by Codex; this is a pending independent review, not completed remote dogfood.
+Read-only review request `fc6d20ff-3aa1-44e7-bc50-ea2058c918de` was submitted through the existing local courier to the connected Claude reviewer. Reply `63a63c8c-4a7f-4d45-b816-4c76ceed5232` subsequently arrived as native Codex task input. Claude found no material identity, sharing, revocation, credential, or false-submission defect in its earlier snapshot, independently passing 43 tests. It did not review WebSocket replacement or the shutdown bookkeeping issue, and its snapshot preceded the final reconnect test.
+
+The review removed redundant per-contact sending credentials. A machine already needed its owner credential to retrieve them before every send. The relay now authenticates that owner directly, checks the selected pairing, and stores each relationship as two machine IDs. Tests verify valid but unpaired owners are refused, revocation blocks both directions, sender headers cannot replace the authenticated machine, and sends and discovery each use one request without a contacts preflight. Common validation helpers now have one implementation; native, relay, and HTTP deadlines derive from one native deadline with explicit margins.
+
+The review's proposed rule that every non-abort fetch rejection means no submission was disproved with real loopback sockets. Bun 1.3.14 rejected with `ECONNRESET` after the fixture consumed the complete POST, both before response headers and while reading a partial response. These outcomes remain uncertain. Only the observed fetch-stage `ConnectionRefused` code is classified as a definite connection failure; unverified errors remain uncertain. Regression tests check literal full-body receipt and one request with no resend in each consumed-message case. This completes a useful implementation review through the local courier; it is not a two-machine remote dogfood result.
 
 ## Remaining checks
 

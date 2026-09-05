@@ -1,15 +1,17 @@
 import { link, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { addressOf, formatAddress } from './data.ts'
+import { addressOf, formatAddress, parseNativeAddress } from './data.ts'
 import type { Address, Failure, Result } from './data.ts'
 import { listPeers, resolvePeer } from './registry.ts'
 import {
   decodeInvitation, encodeInvitation, maxFrameBytes, parseContacts, parseDelivery,
-  parseIdentity, parseMachineId, parseNativeAddress, parseRemoteResult, validateOrigin,
+  parseIdentity, parseMachineId, parseRemoteResult, validateOrigin,
 } from './remote-protocol.ts'
 import type { Delivery, RemoteAddress, RemoteContact, RemoteIdentity, RemoteResult } from './remote-protocol.ts'
 import { sendMessage } from './send.ts'
 import type { Message, SendOptions, SendOutcome } from './send.ts'
+import { remoteRequestTimeoutMs } from './delivery-limits.ts'
+import { isObject } from './validation.ts'
 
 export type Bridge = {
   connected: Promise<Result<void>>
@@ -19,7 +21,9 @@ export type Bridge = {
 export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped'
 
 type RemotePeer = { name: string; address: Address }
-type HttpResult = { ok: true; status: number; value: unknown } | { ok: false; error: string }
+type HttpResult =
+  | { ok: true; status: number; value: unknown }
+  | { ok: false; status: 'failed' | 'uncertain'; error: string }
 
 export async function loadRemoteIdentity(home: string): Promise<Result<RemoteIdentity>> {
   const raw = await readJson(join(home, 'remote.json'))
@@ -71,17 +75,23 @@ export async function createInvitation(home: string): Promise<Result<string>> {
 export async function remoteContacts(home: string): Promise<Result<RemoteContact[]>> {
   const identity = await loadRemoteIdentity(home)
   if (!identity.ok) return identity
-  return contactsFor(identity.value)
+  const response = await requestJson(identity.value.origin, '/contacts', 'GET', identity.value.ownerToken)
+  if (!response.ok) return fail(response.error)
+  if (response.status !== 200) return fail(`Relay refused the contact request (HTTP ${response.status}).`)
+  return parseContacts(response.value)
 }
 
 export async function sharePeer(home: string, contactId: string, address: Address): Promise<Result<void>> {
-  const contact = await findContact(home, contactId)
-  if (!contact.ok) return contact
+  const id = parseMachineId(contactId)
+  if (!id.ok) return id
   const parsed = parseNativeAddress(address)
   if (!parsed.ok) return parsed
+  const contacts = await remoteContacts(home)
+  if (!contacts.ok) return contacts
+  if (!contacts.value.some(contact => contact.id === id.value)) return fail('This machine has no active pairing with that contact.', 'not-found')
   const registration = await resolvePeer(home, formatAddress(parsed.value))
   if (!registration.ok) return registration
-  return writeAtomic(grantPath(home, contact.value.contact.id, parsed.value), { contactId: contact.value.contact.id, address: parsed.value })
+  return writeAtomic(grantPath(home, id.value, parsed.value), { contactId: id.value, address: parsed.value })
 }
 
 export async function unsharePeer(home: string, contactId: string, address: Address): Promise<Result<void>> {
@@ -115,9 +125,11 @@ export async function revokeContact(home: string, contactId: string): Promise<Re
 }
 
 export async function remotePeers(home: string, contactId: string): Promise<Result<RemotePeer[]>> {
-  const contact = await findContact(home, contactId)
-  if (!contact.ok) return contact
-  const response = await requestJson(contact.value.identity.origin, '/peers', 'POST', contact.value.contact.sendToken)
+  const id = parseMachineId(contactId)
+  if (!id.ok) return id
+  const identity = await loadRemoteIdentity(home)
+  if (!identity.ok) return identity
+  const response = await requestJson(identity.value.origin, '/peers', 'POST', identity.value.ownerToken, undefined, { 'x-contact': id.value })
   if (!response.ok) return fail(response.error)
   const result = parseRemoteResult(response.value)
   if (!result.ok) return fail('Relay returned an invalid discovery result.')
@@ -133,22 +145,29 @@ export async function sendRemote(home: string, to: RemoteAddress, message: Messa
   if (message.from.provider === 'remote') return { status: 'failed', error: 'Remote messages cannot be forwarded as another contact. Send from the current local conversation.' }
   const target = parseNativeAddress(to.peer)
   if (!target.ok) return { status: 'failed', error: target.error.message }
-  const contact = await findContact(home, to.machineId)
-  if (!contact.ok) return { status: 'failed', error: contact.error.message }
+  const contactId = parseMachineId(to.machineId)
+  if (!contactId.ok) return { status: 'failed', error: contactId.error.message }
+  const identity = await loadRemoteIdentity(home)
+  if (!identity.ok) return { status: 'failed', error: identity.error.message }
   const source = await resolvePeer(home, formatAddress(message.from))
   if (!source.ok) return { status: 'failed', error: source.error.message }
-  const shared = await hasGrant(home, contact.value.contact.id, addressOf(source.value.destination))
+  const shared = await hasGrant(home, contactId.value, addressOf(source.value.destination))
   if (!shared.ok) return { status: 'failed', error: shared.error.message }
-  if (!shared.value) return { status: 'failed', error: `Share this conversation first with uc remote share ${contact.value.contact.id} ${formatAddress(message.from)}.` }
+  if (!shared.value) return { status: 'failed', error: `Share this conversation first with uc remote share ${contactId.value} ${formatAddress(message.from)}.` }
   const headers: Record<string, string> = {
     'content-type': 'text/plain; charset=utf-8',
     'x-from': formatAddress(message.from),
     'x-to': formatAddress(target.value),
     'x-request': message.id,
+    'x-contact': contactId.value,
   }
   if (message.inReplyTo !== null) headers['x-in-reply-to'] = message.inReplyTo
-  const response = await requestJson(contact.value.identity.origin, '/send', 'POST', contact.value.contact.sendToken, message.text, headers)
-  if (!response.ok) return { status: 'uncertain', error: `${response.error} The message may have been forwarded. No retry was made.` }
+  const response = await requestJson(identity.value.origin, '/send', 'POST', identity.value.ownerToken, message.text, headers)
+  if (!response.ok) {
+    return response.status === 'failed'
+      ? { status: 'failed', error: `${response.error} No message was sent.` }
+      : { status: 'uncertain', error: `${response.error} The message may have been forwarded. No retry was made.` }
+  }
   const result = parseRemoteResult(response.value)
   if (!result.ok || result.value.status === 'peers') return { status: 'uncertain', error: 'Relay returned an invalid send receipt; the message may have been forwarded. No retry was made.' }
   return result.value
@@ -212,7 +231,7 @@ export async function startBridge(home: string, options: SendOptions = {}, onSta
       socket = null
       connection.terminate()
       retry()
-    }, 15_000)
+    }, remoteRequestTimeoutMs)
     connection.addEventListener('open', () => {
       clearTimeout(handshake)
       if (state === 'stopped') { connection.terminate(); return }
@@ -280,25 +299,6 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
       }, options)
     }
   }
-}
-
-async function findContact(home: string, contactId: string): Promise<Result<{ identity: RemoteIdentity; contact: RemoteContact }>> {
-  const id = parseMachineId(contactId)
-  if (!id.ok) return id
-  const identity = await loadRemoteIdentity(home)
-  if (!identity.ok) return identity
-  const contacts = await contactsFor(identity.value)
-  if (!contacts.ok) return contacts
-  const contact = contacts.value.find(item => item.id === id.value)
-  if (contact === undefined) return fail('This machine has no active pairing with that contact.', 'not-found')
-  return { ok: true, value: { identity: identity.value, contact } }
-}
-
-async function contactsFor(identity: RemoteIdentity): Promise<Result<RemoteContact[]>> {
-  const response = await requestJson(identity.origin, '/contacts', 'GET', identity.ownerToken)
-  if (!response.ok) return fail(response.error)
-  if (response.status !== 200) return fail(`Relay refused the contact request (HTTP ${response.status}).`)
-  return parseContacts(response.value)
 }
 
 async function hasGrant(home: string, contactId: string, address: Address): Promise<Result<boolean>> {
@@ -385,11 +385,21 @@ async function readJson(path: string): Promise<Result<unknown>> {
 async function requestJson(origin: string, path: string, method: 'GET' | 'POST', token: string | null, body?: string, extraHeaders?: Record<string, string>, signal?: AbortSignal): Promise<HttpResult> {
   const headers: Record<string, string> = { 'content-type': 'application/json', ...extraHeaders }
   if (token !== null) headers['authorization'] = `Bearer ${token}`
-  const timeout = AbortSignal.timeout(15_000)
+  const timeout = AbortSignal.timeout(remoteRequestTimeoutMs)
   const requestSignal = signal === undefined ? timeout : AbortSignal.any([timeout, signal])
+  let response: Response
   try {
-    const response = await fetch(`${origin}${path}`, { method, headers, ...(body === undefined ? {} : { body }), signal: requestSignal, redirect: 'error' })
-    if (response.body === null) return { ok: false, error: 'Relay returned no JSON response.' }
+    response = await fetch(`${origin}${path}`, { method, headers, ...(body === undefined ? {} : { body }), signal: requestSignal, redirect: 'error' })
+  } catch (error) {
+    // Bun 1.3.14 reports this code before connecting. ECONNRESET can happen
+    // after the relay consumes the full POST, even before response headers.
+    if (hasErrorCode(error, 'ConnectionRefused')) {
+      return { ok: false, status: 'failed', error: 'The relay connection was refused.' }
+    }
+    return { ok: false, status: 'uncertain', error: 'Relay request was not confirmed.' }
+  }
+  try {
+    if (response.body === null) return { ok: false, status: 'uncertain', error: 'Relay returned no JSON response.' }
     const reader = response.body.getReader()
     const chunks: Uint8Array[] = []
     let size = 0
@@ -397,25 +407,22 @@ async function requestJson(origin: string, path: string, method: 'GET' | 'POST',
       const next = await reader.read()
       if (next.done) break
       const chunk: unknown = next.value
-      if (!(chunk instanceof Uint8Array)) { await reader.cancel(); return { ok: false, error: 'Relay returned a non-byte response body.' } }
+      if (!(chunk instanceof Uint8Array)) { await reader.cancel(); return { ok: false, status: 'uncertain', error: 'Relay returned a non-byte response body.' } }
       size += chunk.length
-      if (size > maxFrameBytes) { await reader.cancel(); return { ok: false, error: 'Relay response exceeded its size limit.' } }
+      if (size > maxFrameBytes) { await reader.cancel(); return { ok: false, status: 'uncertain', error: 'Relay response exceeded its size limit.' } }
       chunks.push(chunk)
     }
     const raw: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
     return { ok: true, status: response.status, value: raw }
   } catch {
-    return { ok: false, error: 'Relay request or response was not confirmed.' }
+    return { ok: false, status: 'uncertain', error: 'Relay response was not confirmed.' }
   }
 }
 
 function setupFailure(response: HttpResult): Failure {
+  if (!response.ok && response.status === 'failed') return fail(`${response.error} The setup request was not sent.`)
   if (!response.ok || response.status >= 500) return fail('Remote setup outcome is uncertain and an invitation may have been consumed. Check enrollment or obtain a replacement invitation; no retry was made.')
   return fail(`Relay refused this setup request (HTTP ${response.status}). No retry was made.`)
-}
-
-function isObject(raw: unknown): raw is Record<string, unknown> {
-  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {

@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs'
 import { join } from 'node:path'
 import { addressOf, formatAddress, parseAddress, parseRegistration } from './data.ts'
 import type { Address, Failure, Registration, Result } from './data.ts'
+import { errorText } from './validation.ts'
 
 export async function listPeers(home: string): Promise<Result<Registration[]>> {
   const directory = join(home, 'peers')
@@ -123,8 +124,4 @@ function hasErrorCode(error: unknown, code: string): boolean {
 
 function ioFailure(operation: string, error: unknown): Failure {
   return { ok: false, error: { kind: 'io', message: `${operation}: ${errorText(error)}` } }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

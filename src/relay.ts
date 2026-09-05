@@ -2,11 +2,13 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parseAddress } from './data.ts'
+import { relayReceiptTimeoutMs } from './delivery-limits.ts'
 import { maxFrameBytes, parseDelivery, parseMachineId, parseReceipt } from './remote-protocol.ts'
 import type { Delivery, RemoteResult } from './remote-protocol.ts'
+import { errorText, hasKeys, isObject, isToken } from './validation.ts'
 
 type Machine = { id: string; ownerToken: string }
-type Contact = { a: string; b: string; aToBToken: string; bToAToken: string }
+type Contact = { a: string; b: string }
 type Invite = { code: string; inviterId: string; expiresAt: number }
 type State = { machines: Machine[]; contacts: Contact[]; invitations: Invite[] }
 type BridgeData = { machineId: string }
@@ -14,12 +16,11 @@ type Bridge = Bun.ServerWebSocket<BridgeData>
 type Pending = { bridge: Bridge; type: Delivery['type']; resolve: (result: RemoteResult) => void; timer: ReturnType<typeof setTimeout> }
 export type RelayOptions = { statePath: string; hostname?: string; port?: number; adminToken: string; receiptTimeoutMs?: number }
 
-const tokenPattern = /^[0-9a-f]{64}$/
 const maxPending = 256
 
 export async function startRelay(options: RelayOptions): Promise<Bun.Server<BridgeData>> {
-  if (!tokenPattern.test(options.adminToken)) throw new Error('Relay admin token must be 64 lowercase hexadecimal characters.')
-  const receiptTimeoutMs = options.receiptTimeoutMs ?? 12_000
+  if (!isToken(options.adminToken)) throw new Error('Relay admin token must be 64 lowercase hexadecimal characters.')
+  const receiptTimeoutMs = options.receiptTimeoutMs ?? relayReceiptTimeoutMs
   if (!Number.isSafeInteger(receiptTimeoutMs) || receiptTimeoutMs <= 0) throw new Error('Receipt timeout must be a positive integer.')
   let state = await loadState(options.statePath)
   const bridges = new Map<string, Bridge>()
@@ -46,13 +47,15 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
     return state.machines.find(machine => machine.ownerToken === token)
   }
 
-  function route(request: Request): { from: string; to: string } | null {
-    const token = bearer(request)
-    for (const contact of state.contacts) {
-      if (contact.aToBToken === token) return { from: contact.a, to: contact.b }
-      if (contact.bToAToken === token) return { from: contact.b, to: contact.a }
-    }
-    return null
+  function route(request: Request): { from: string; to: string } | Response {
+    const machine = owner(request)
+    if (machine === undefined) return failure('Invalid owner credential.', 401)
+    const recipient = parseMachineId(request.headers.get('x-contact'))
+    if (!recipient.ok) return failure('x-contact must identify a recipient machine UUID.', 400)
+    const paired = state.contacts.some(contact =>
+      (contact.a === machine.id && contact.b === recipient.value) || (contact.b === machine.id && contact.a === recipient.value))
+    if (!paired) return failure('These machines do not have an active pairing.', 403)
+    return { from: machine.id, to: recipient.value }
   }
 
   function settle(id: string, result: RemoteResult): void {
@@ -127,7 +130,7 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
         }
         case 'POST /accept': {
           const raw = await jsonBody(request)
-          if (!isObject(raw) || !hasKeys(raw, ['code']) || typeof raw['code'] !== 'string' || !tokenPattern.test(raw['code'])) {
+          if (!isObject(raw) || !hasKeys(raw, ['code']) || !isToken(raw['code'])) {
             return failure('Accept requires an invitation code.', 400)
           }
           const code = raw['code']
@@ -138,7 +141,7 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
               return failure('The inviting machine already has 256 contacts.', 409)
             }
             const machine = { id: crypto.randomUUID(), ownerToken: token() }
-            const contact = { a: invite.inviterId, b: machine.id, aToBToken: token(), bToAToken: token() }
+            const contact = { a: invite.inviterId, b: machine.id }
             await commit({
               machines: [...state.machines, machine], contacts: [...state.contacts, contact],
               invitations: state.invitations.filter(item => item.code !== code),
@@ -151,8 +154,8 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
           if (machine === undefined) return failure('Invalid owner credential.', 401)
           const contacts = []
           for (const contact of state.contacts) {
-            if (contact.a === machine.id) contacts.push({ id: contact.b, sendToken: contact.aToBToken })
-            if (contact.b === machine.id) contacts.push({ id: contact.a, sendToken: contact.bToAToken })
+            if (contact.a === machine.id) contacts.push({ id: contact.b })
+            if (contact.b === machine.id) contacts.push({ id: contact.a })
           }
           return Response.json({ contacts })
         }
@@ -173,16 +176,17 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
           })
         }
         case 'POST /send': {
-          if (route(request) === null) return failure('Invalid or revoked send credential.', 401)
+          const admitted = route(request)
+          if (admitted instanceof Response) return admitted
           const from = parseAddress(request.headers.get('x-from') ?? '')
           const to = parseAddress(request.headers.get('x-to') ?? '')
           if (!from.ok) return failure(from.error.message, 400)
           if (!to.ok) return failure(to.error.message, 400)
           let text: string
           try { text = await request.text() } catch { return failure('Cannot read message text.', 400) }
-          // Read the committed credential again after body I/O, immediately before dispatch.
+          // Recheck the committed pairing after body I/O, immediately before dispatch.
           const contact = route(request)
-          if (contact === null) return failure('Invalid or revoked send credential.', 401)
+          if (contact instanceof Response) return contact
           const delivery = parseDelivery({
             type: 'send', requestId: crypto.randomUUID(), contactId: contact.from, to: to.value,
             message: { id: request.headers.get('x-request'), from: from.value, text, inReplyTo: request.headers.get('x-in-reply-to') },
@@ -192,7 +196,7 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
         }
         case 'POST /peers': {
           const contact = route(request)
-          if (contact === null) return failure('Invalid or revoked send credential.', 401)
+          if (contact instanceof Response) return contact
           return dispatch(contact.to, { type: 'peers', requestId: crypto.randomUUID(), contactId: contact.from })
         }
         default: return failure('Unknown relay endpoint.', 404)
@@ -250,9 +254,6 @@ function bearer(request: Request): string | null {
 
 function token(): string { return randomBytes(32).toString('hex') }
 function failure(error: string, status: number): Response { return Response.json({ status: 'failed', error }, { status }) }
-function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error) }
-function isObject(raw: unknown): raw is Record<string, unknown> { return typeof raw === 'object' && raw !== null && !Array.isArray(raw) }
-function hasKeys(raw: Record<string, unknown>, keys: string[]): boolean { return Object.keys(raw).length === keys.length && keys.every(key => Object.hasOwn(raw, key)) }
 
 async function saveState(path: string, state: State): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
@@ -280,7 +281,7 @@ async function loadState(path: string): Promise<State> {
   const state: State = { machines: [], contacts: [], invitations: [] }
   const secrets: string[] = []
   function secret(value: unknown): string {
-    if (typeof value !== 'string' || !tokenPattern.test(value) || secrets.includes(value)) throw new Error('Invalid or repeated relay credential.')
+    if (!isToken(value) || secrets.includes(value)) throw new Error('Invalid or repeated relay credential.')
     secrets.push(value)
     return value
   }
@@ -296,14 +297,14 @@ async function loadState(path: string): Promise<State> {
     state.machines.push({ id: machineId, ownerToken: secret(machine['ownerToken']) })
   }
   for (const contact of raw['contacts']) {
-    if (!isObject(contact) || !hasKeys(contact, ['a', 'b', 'aToBToken', 'bToAToken'])) throw new Error('Invalid relay contact.')
+    if (!isObject(contact) || !hasKeys(contact, ['a', 'b'])) throw new Error('Invalid relay contact.')
     const a = id(contact['a'])
     const b = id(contact['b'])
     if (a === b || !state.machines.some(item => item.id === a) || !state.machines.some(item => item.id === b)
       || state.contacts.some(item => (item.a === a && item.b === b) || (item.a === b && item.b === a))) {
       throw new Error('Relay contact references invalid machines or repeats a pairing.')
     }
-    state.contacts.push({ a, b, aToBToken: secret(contact['aToBToken']), bToAToken: secret(contact['bToAToken']) })
+    state.contacts.push({ a, b })
   }
   for (const invite of raw['invitations']) {
     if (!isObject(invite) || !hasKeys(invite, ['code', 'inviterId', 'expiresAt'])) throw new Error('Invalid relay invitation.')

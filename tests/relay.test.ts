@@ -61,17 +61,16 @@ async function contacts(server: Relay, machine: RemoteIdentity): Promise<RemoteC
   return result.value
 }
 
-async function pair(server: Relay): Promise<{ a: RemoteIdentity; b: RemoteIdentity; aToB: string; bToA: string }> {
+async function pair(server: Relay): Promise<{ a: RemoteIdentity; b: RemoteIdentity }> {
   const a = await machine(server)
   const invite = await object(await post(server, '/invites', a.ownerToken))
   const b = identity(server, await object(await post(server, '/accept', null, { code: invite['code'] })))
   const aContact = (await contacts(server, a))[0]
   const bContact = (await contacts(server, b))[0]
   if (aContact === undefined || bContact === undefined) throw new Error('Pairing did not create both contact views')
-  expect(aContact.id).toBe(b.machineId)
-  expect(bContact.id).toBe(a.machineId)
-  expect(aContact.sendToken).not.toBe(bContact.sendToken)
-  return { a, b, aToB: aContact.sendToken, bToA: bContact.sendToken }
+  expect(aContact).toEqual({ id: b.machineId })
+  expect(bContact).toEqual({ id: a.machineId })
+  return { a, b }
 }
 
 async function bridge(server: Relay, machine: RemoteIdentity) {
@@ -110,10 +109,16 @@ async function bridge(server: Relay, machine: RemoteIdentity) {
   }
 }
 
-function send(server: Relay, token: string, text = 'hello', id = crypto.randomUUID()): Promise<Response> {
+function send(server: Relay, from: RemoteIdentity, contactId: string, text = 'hello', id = crypto.randomUUID(), extraHeaders?: Record<string, string>): Promise<Response> {
   return fetch(new URL('/send', server.url), {
     method: 'POST', body: text,
-    headers: { authorization: `Bearer ${token}`, 'x-from': nativeFrom, 'x-to': nativeTo, 'x-request': id },
+    headers: { authorization: `Bearer ${from.ownerToken}`, 'x-contact': contactId, 'x-from': nativeFrom, 'x-to': nativeTo, 'x-request': id, ...extraHeaders },
+  })
+}
+
+function discover(server: Relay, from: RemoteIdentity, contactId: string): Promise<Response> {
+  return fetch(new URL('/peers', server.url), {
+    method: 'POST', headers: { authorization: `Bearer ${from.ownerToken}`, 'x-contact': contactId },
   })
 }
 
@@ -133,7 +138,7 @@ test('remote protocol keeps origins, native identities, and receipts at their bo
   expect(parseReceipt({ type: 'receipt', requestId: crypto.randomUUID(), result: { status: 'read' } }).ok).toBe(false)
 })
 
-test('invitation redemption is atomic, single use, durable, and gives only directional contact credentials', async () => {
+test('invitation redemption is atomic, single use, durable, and exposes no contact secrets', async () => {
   const { server, statePath } = await relay()
   expect((await post(server, '/machines', 'wrong')).status).toBe(401)
   const a = await machine(server)
@@ -146,9 +151,8 @@ test('invitation redemption is atomic, single use, durable, and gives only direc
   const b = identity(server, result)
   expect(result['contactId']).toBe(a.machineId)
   const original = await contacts(server, a)
-  expect(original).toHaveLength(1)
-  expect((await contacts(server, b))[0]?.id).toBe(a.machineId)
-  expect((await send(server, a.ownerToken)).status).toBe(401)
+  expect(original).toEqual([{ id: b.machineId }])
+  expect(await contacts(server, b)).toEqual([{ id: a.machineId }])
   await server.stop(true)
   const restarted = await startRelay({ statePath, adminToken, port: 0 })
   servers.push(restarted)
@@ -161,11 +165,15 @@ test('invitation redemption is atomic, single use, durable, and gives only direc
 test('routing binds receipt to its bridge and distinct dispatch ID while preserving message content', async () => {
   const { server, statePath } = await relay()
   const peers = await pair(server)
+  const outsider = await machine(server)
   const a = await bridge(server, peers.a)
   const b = await bridge(server, peers.b)
+  expect((await send(server, outsider, peers.b.machineId)).status).toBe(403)
+  expect((await discover(server, outsider, peers.b.machineId)).status).toBe(403)
+  expect((await send(server, { ...peers.a, ownerToken: 'b'.repeat(64) }, peers.b.machineId)).status).toBe(401)
   const messageId = crypto.randomUUID()
   const text = 'exact remote text\n🦉 $HOME `literal`'
-  const response = send(server, peers.aToB, text, messageId)
+  const response = send(server, peers.a, peers.b.machineId, text, messageId, { 'x-from-machine': outsider.machineId })
   const delivery = await b.next()
   expect(delivery.type).toBe('send')
   if (delivery.type !== 'send') throw new Error('Expected send delivery')
@@ -176,7 +184,7 @@ test('routing binds receipt to its bridge and distinct dispatch ID while preserv
   a.receipt(delivery.requestId, { status: 'failed', error: 'Forged receipt from another owner connection' })
   b.receipt(delivery.requestId, accepted)
   expect(await object(await response)).toEqual(accepted)
-  const discovery = post(server, '/peers', peers.aToB)
+  const discovery = discover(server, peers.a, peers.b.machineId)
   const peerRequest = await b.next()
   expect(peerRequest.type).toBe('peers')
   b.receipt(delivery.requestId, { status: 'failed', error: 'Duplicate old receipt' })
@@ -190,41 +198,43 @@ test('replacement and disconnect settle only the old socket requests, and offlin
   const peers = await pair(server)
   const a = await bridge(server, peers.a)
   const b = await bridge(server, peers.b)
-  const toB = send(server, peers.aToB)
-  const toA = send(server, peers.bToA)
+  const toB = send(server, peers.a, peers.b.machineId)
+  const toA = send(server, peers.b, peers.a.machineId)
   await b.next()
   const kept = await a.next()
+  expect(kept.contactId).toBe(peers.b.machineId)
   const replacement = await bridge(server, peers.b)
   expect(await object(await toB)).toMatchObject({ status: 'uncertain' })
   a.receipt(kept.requestId, accepted)
   expect(await object(await toA)).toEqual(accepted)
-  const next = send(server, peers.aToB)
+  const next = send(server, peers.a, peers.b.machineId)
   const fresh = await replacement.next()
   replacement.receipt(fresh.requestId, accepted)
   expect(await object(await next)).toEqual(accepted)
-  const dropped = send(server, peers.aToB)
+  const dropped = send(server, peers.a, peers.b.machineId)
   await replacement.next()
   replacement.socket.close()
   expect(await object(await dropped)).toMatchObject({ status: 'uncertain' })
-  expect(await object(await send(server, peers.aToB))).toMatchObject({ status: 'failed' })
+  expect(await object(await send(server, peers.a, peers.b.machineId))).toMatchObject({ status: 'failed' })
 })
 
 test('forwarded timeout stays uncertain without resending, and revocation blocks both directions', async () => {
   const { server, statePath } = await relay(50)
   const peers = await pair(server)
   const b = await bridge(server, peers.b)
-  const response = send(server, peers.aToB)
+  const response = send(server, peers.a, peers.b.machineId)
   await b.next()
   expect(await object(await response)).toMatchObject({ status: 'uncertain' })
   expect(b.buffered).toHaveLength(0)
   expect(await object(await post(server, '/revoke', peers.a.ownerToken, { contactId: peers.b.machineId }))).toEqual({ status: 'revoked' })
-  expect((await send(server, peers.aToB)).status).toBe(401)
-  expect((await send(server, peers.bToA)).status).toBe(401)
+  expect((await send(server, peers.a, peers.b.machineId)).status).toBe(403)
+  expect((await send(server, peers.b, peers.a.machineId)).status).toBe(403)
+  expect((await discover(server, peers.a, peers.b.machineId)).status).toBe(403)
+  expect((await discover(server, peers.b, peers.a.machineId)).status).toBe(403)
   expect(await contacts(server, peers.a)).toEqual([])
   expect(await contacts(server, peers.b)).toEqual([])
   const stored = await readFile(statePath, 'utf8')
-  expect(stored).not.toContain(peers.aToB)
-  expect(stored).not.toContain(peers.bToA)
+  expect(stored).toContain('"contacts":[]')
 })
 
 test('pending dispatches are bounded per bridge', async () => {
@@ -234,10 +244,10 @@ test('pending dispatches are bounded per bridge', async () => {
   const requests: Promise<Response>[] = []
   const deliveries: Delivery[] = []
   for (let i = 0; i < 64; i += 1) {
-    requests.push(send(server, peers.aToB))
+    requests.push(send(server, peers.a, peers.b.machineId))
     deliveries.push(await b.next())
   }
-  expect((await send(server, peers.aToB)).status).toBe(429)
+  expect((await send(server, peers.a, peers.b.machineId)).status).toBe(429)
   for (const delivery of deliveries) b.receipt(delivery.requestId, accepted)
   for (const response of await Promise.all(requests)) expect(await object(response)).toEqual(accepted)
 })

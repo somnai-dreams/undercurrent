@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, jest, test } from 'bun:test'
+import { afterEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -115,16 +115,18 @@ describe('remote enrollment and grants', () => {
     expect((await rejected.stopped).ok).toBeFalse()
   })
 
-  test('an oversized response yields uncertainty without retrying a possibly forwarded send', async () => {
+  test('send and discovery use one authorized request, while oversized receipts remain uncertain', async () => {
     const pair = await pairedMachines()
     unwrap(await joinPeer(pair.aHome, sender))
     unwrap(await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
-    const contacts = unwrap(await remoteContacts(pair.aHome))
-    let sends = 0
+    const requests: Array<{ path: string; authorization: string | null; contactId: string | null }> = []
     const mock = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch(request) {
-      switch (new URL(request.url).pathname) {
-        case '/contacts': return Response.json({ contacts })
-        case '/send': sends += 1; return new Response('x'.repeat(300 * 1024))
+      const path = new URL(request.url).pathname
+      requests.push({ path, authorization: request.headers.get('authorization'), contactId: request.headers.get('x-contact') })
+      switch (path) {
+        case '/contacts': return Response.json({ contacts: [] })
+        case '/send': return new Response('x'.repeat(300 * 1024))
+        case '/peers': return Response.json({ status: 'peers', peers: [] })
         default: return new Response(null, { status: 404 })
       }
     } })
@@ -133,7 +135,50 @@ describe('remote enrollment and grants', () => {
     const to: RemoteAddress = { provider: 'remote', machineId: pair.b.machineId, peer: { provider: 'claude', sessionId: targetId } }
     const result = await sendRemote(pair.aHome, to, unwrap(createMessage(addressOf(sender.destination), 'Only once', null)))
     expect(result.status).toBe('uncertain')
-    expect(sends).toBe(1)
+    expect(requests).toEqual([{ path: '/send', authorization: `Bearer ${pair.a.ownerToken}`, contactId: pair.b.machineId }])
+    expect(unwrap(await remotePeers(pair.aHome, pair.b.machineId.toUpperCase()))).toEqual([])
+    expect(requests).toEqual([
+      { path: '/send', authorization: `Bearer ${pair.a.ownerToken}`, contactId: pair.b.machineId },
+      { path: '/peers', authorization: `Bearer ${pair.a.ownerToken}`, contactId: pair.b.machineId },
+    ])
+  })
+
+  test('a refused TCP connection fails before submission without retrying', async () => {
+    const pair = await pairedMachines()
+    unwrap(await joinPeer(pair.aHome, sender))
+    unwrap(await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
+    const listener = createServer()
+    const origin = await listenTcp(listener)
+    await new Promise<void>((resolve, reject) => listener.close(error => error === undefined ? resolve() : reject(error)))
+    await writeFile(join(pair.aHome, 'remote.json'), JSON.stringify({ ...pair.a, origin }))
+    const to: RemoteAddress = { provider: 'remote', machineId: pair.b.machineId, peer: { provider: 'claude', sessionId: targetId } }
+    const fetchCalls = spyOn(globalThis, 'fetch')
+    try {
+      const outcome = await sendRemote(pair.aHome, to, unwrap(createMessage(addressOf(sender.destination), 'The closed listener cannot receive this', null)))
+      expect(outcome.status).toBe('failed')
+      expect(fetchCalls).toHaveBeenCalledTimes(1)
+    } finally {
+      fetchCalls.mockRestore()
+    }
+  })
+
+  test.each(['before-headers', 'during-body'] as const)('a response reset %s stays uncertain after the entire POST was consumed', async mode => {
+    const pair = await pairedMachines()
+    unwrap(await joinPeer(pair.aHome, sender))
+    unwrap(await sharePeer(pair.aHome, pair.b.machineId, addressOf(sender.destination)))
+    const fixture = await interruptedPost(mode)
+    await writeFile(join(pair.aHome, 'remote.json'), JSON.stringify({ ...pair.a, origin: fixture.origin }))
+    const text = `One complete message, interrupted ${mode}`
+    const to: RemoteAddress = { provider: 'remote', machineId: pair.b.machineId, peer: { provider: 'claude', sessionId: targetId } }
+    const fetchCalls = spyOn(globalThis, 'fetch')
+    try {
+      const outcome = await sendRemote(pair.aHome, to, unwrap(createMessage(addressOf(sender.destination), text, null)))
+      expect(outcome.status).toBe('uncertain')
+      expect(fetchCalls).toHaveBeenCalledTimes(1)
+      expect(fixture.observed).toEqual({ connections: 1, requests: ['POST /send HTTP/1.1'], bodies: [text], partialResponses: mode === 'during-body' ? 1 : 0 })
+    } finally {
+      fetchCalls.mockRestore()
+    }
   })
 
   test('WebSocket redirects do not forward the owner credential to another origin', async () => {
@@ -266,6 +311,53 @@ async function nativeSocket(path: string): Promise<{ path: string; received: Pro
   server.listen(path, () => ready.resolve())
   await ready.promise
   return { path, received: received.promise }
+}
+
+async function listenTcp(server: Server): Promise<string> {
+  await new Promise<void>(resolve => server.listen({ host: '127.0.0.1', port: 0 }, resolve))
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('TCP fixture has no port')
+  return `http://127.0.0.1:${address.port}`
+}
+
+async function interruptedPost(mode: 'before-headers' | 'during-body'): Promise<{
+  origin: string
+  observed: { connections: number; requests: string[]; bodies: string[]; partialResponses: number }
+}> {
+  const observed = { connections: 0, requests: [] as string[], bodies: [] as string[], partialResponses: 0 }
+  const server = createServer(socket => {
+    observed.connections += 1
+    let received = Buffer.alloc(0)
+    let handled = false
+    socket.on('error', () => {})
+    socket.on('data', (chunk: Buffer) => {
+      if (handled) return
+      received = Buffer.concat([received, chunk])
+      const separator = received.indexOf('\r\n\r\n')
+      if (separator < 0) return
+      const headers = received.subarray(0, separator).toString('latin1').split('\r\n')
+      const lengthHeader = headers.find(line => line.toLowerCase().startsWith('content-length:'))
+      const expected = lengthHeader === undefined ? 0 : Number(lengthHeader.slice(lengthHeader.indexOf(':') + 1).trim())
+      if (received.length - separator - 4 < expected) return
+      handled = true
+      const requestLine = headers[0]
+      if (requestLine === undefined) throw new Error('TCP fixture received no request line')
+      observed.requests.push(requestLine)
+      observed.bodies.push(received.subarray(separator + 4, separator + 4 + expected).toString('utf8'))
+      switch (mode) {
+        case 'before-headers': socket.destroy(); break
+        case 'during-body':
+          socket.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 256\r\nConnection: close\r\n\r\n{"status":"submitted"', () => {
+            observed.partialResponses += 1
+            setTimeout(() => socket.destroy(), 25)
+          })
+          break
+      }
+    })
+  })
+  const origin = await listenTcp(server)
+  servers.push(server)
+  return { origin, observed }
 }
 
 function unwrap<T>(result: Result<T>): T {

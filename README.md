@@ -85,6 +85,6 @@ Codex errors include the last 4 KiB of native diagnostics when available. The di
 
 Mixed Codex and Claude identity variables are rejected rather than choosing a sender. Do not copy another conversation's identity or Claude messaging token into the sender environment.
 
-Verified with Bun `1.3.14`, Codex CLI `0.153.4` through the user's wrapper, and Claude Code `2.1.261`: Claude received a real review request plus a message during active work, then submitted its review back to the exact Codex task. Codex model consumption of that queued reply remains pending; other versions and hidden Codex subagents are unverified. See [VERIFICATION.md](VERIFICATION.md) for the evidence and remaining checks.
+Verified with Bun `1.3.14`, Codex CLI `0.153.4` through the user's wrapper, and Claude Code `2.1.261`: Claude received a real review request plus a message during active work, then replied to the exact Codex task. Codex consumed the full reply on a subsequent turn, completing the courier round trip. Other versions and hidden Codex subagents are unverified. See [VERIFICATION.md](VERIFICATION.md) for the evidence and remaining checks.
 
 Run `bun run check` for type checks, lint, and tests; `uc --help` lists the commands.

@@ -4,7 +4,7 @@
 
 ## Automated checks
 
-`bun run check` passes strict TypeScript 7, type-aware lint, and 77 tests (669 assertions), including the remote prototype, project policies, global setup, and packaged installation. Local coverage includes exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
+`bun run check` passes strict TypeScript 7, type-aware lint, and 80 tests (720 assertions), including the remote prototype, project policies, linked worktrees, global setup, and packaged installation. Local coverage includes exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 
 A review found that waiting for a Codex wrapper's output streams could exceed the submission timeout when a descendant kept the streams open. The adapter now waits only for process exit, ignores unused output, and terminates its own process group on timeout. A wrapper-and-descendant regression fixture verifies bounded return and one invocation.
 
@@ -30,7 +30,7 @@ Startup hooks have a 10-second budget; end hooks retain 3 seconds. Claude startu
 
 ### Global setup and packaged installation
 
-The explicit `self` permission matches only the policy owner's exact local project. Tests verify one global auto+self policy enables same-project exchanges in two different repositories without granting cross-project or remote exchanges. A local empty allow-list and off policy still deny messages; removing self in one project leaves the other's inherited permission intact.
+The explicit `self` permission includes linked worktrees of the same local Git repository, with each checkout's effective policy checked independently. Tests verify one global auto+self policy enables exchanges within each repository without granting access to other repositories or remote contacts. A local empty allow-list and off policy still deny messages; removing self in one checkout leaves other checkouts' inherited permissions intact.
 
 Setup fixtures cover host detection, explicit host selection, user-wide and project installation, preservation of existing policies and unrelated settings, rerunning setup, updating tagged handlers from an older package path, and upgrading unedited generated instructions. Edited instructions fail without overwriting them or changing hooks. Generated hooks pin their chosen state directory and execute native-shaped events from a different working directory, using the event's project. Project and individual integration targets reject symlinks. A user-wide skills directory can intentionally point at a dotfiles directory; a fixture verifies that layout while still rejecting a redirected individual skill.
 
@@ -43,6 +43,14 @@ Read-only review request `ed7fc3a3-d383-4d94-9bde-b0b6ac2589fa` received native 
 Different unmanaged or edited skills now produce an exact backup-and-rerun recovery command, tested without altering hooks on failure. This checkout's two old project skills matched the committed source at `adf81bd` byte-for-byte. They were backed up beside each skill as `SKILL.md.undercurrent-previous`, then project setup completed for both providers and a repeated setup succeeded. The private project policy was unchanged. Running this upgrade from the original checkout converted its exactly matched old hooks to marked hooks before any future package-path change. The installer deliberately does not delete unrelated unmarked commands by a generic `cli.ts hook` suffix; early installations from a different checkout need the documented review step.
 
 The current Codex task's native available-skills catalog now includes `/Users/max/.codex/skills/undercurrent/SKILL.md`, directly confirming discovery at the installed user-wide location on this host. The actual host lifecycle gate above remains open.
+
+### Linked worktrees
+
+A user dogfood report found a player conversation in a linked worktree marked as a stranger to conversations in the main checkout. The approved correction changes only the meaning of self. Real Git fixtures now cover a main checkout, a linked branch checkout, a detached sibling, a separate clone configured with the same remote URL, a nested repository, and non-Git directories. Shared Git metadata permits the linked checkouts; clone URLs do not create a relationship. Local configuration and registration roots remain unchanged, and explicit project-path grants continue to name one checkout.
+
+The CLI fixture verifies matching discovery and native handoff across worktrees, literal message capture, and zero further native calls after either side's permission is removed. It also verifies that inherited Git directory/worktree overrides cannot make a separate clone impersonate the repository, and malformed Git metadata reports failure before handoff. Existing remote tests verify that self does not become a contact grant. The full check completed in 6.16 seconds.
+
+A read-only permission check against the existing player and main-checkout dogfood registrations now succeeds without rejoining or rewriting their policies. This verifies the reported permission blockage is resolved; no message was sent into those conversations during this check.
 
 ### Prior courier dogfood
 

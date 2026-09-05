@@ -79,8 +79,9 @@ Global defaults live in UNDERCURRENT_HOME/config.json; .undercurrent.json
 overrides them per project. join controls participation; allow controls messages.
 Joined strangers are discoverable but messages fail without waking them.
 Setup installs lifecycle hooks globally or for this project. New setup policy
-is auto + self; existing settings are preserved. self allows only conversations
-in the same project. Idle does not detach a peer. Codex hooks need native review.
+is auto + self; existing settings are preserved. self includes linked worktrees
+of the same Git repository; each checkout's policy still applies. Idle does not
+detach a peer. Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.
 Submitted means queued in Codex or written to Claude's socket, not read.

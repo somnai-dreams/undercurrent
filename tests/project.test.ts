@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Result } from '../src/data.ts'
-import { authorizeLocal, editAllow, findProject, initializePolicy, parsePermission, projectAllows, readProject } from '../src/project.ts'
+import { authorizeLocal, editAllow, findProject, hasPermission, initializePolicy, parsePermission, readProject } from '../src/project.ts'
 
 const directories: string[] = []
 const contact = { kind: 'contact', id: '11111111-1111-4111-8111-111111111111' } as const
@@ -28,7 +28,7 @@ test('global self is relative to each project and never grants other projects or
   expect((await authorizeLocal(home, a, a)).ok).toBeTrue()
   expect((await authorizeLocal(home, b, b)).ok).toBeTrue()
   expect((await authorizeLocal(home, a, b)).ok).toBeFalse()
-  expect(projectAllows(unwrap(await findProject(home, a)), contact)).toBeFalse()
+  expect(hasPermission(unwrap(await readProject(home, a)), contact)).toBeFalse()
   unwrap(await editAllow(home, a, { kind: 'self' }, false))
   expect((await authorizeLocal(home, a, a)).ok).toBeFalse()
   expect((await authorizeLocal(home, b, b)).ok).toBeTrue()
@@ -50,7 +50,7 @@ test('global defaults apply at each git boundary and project fields override rat
   expect(unwrap(await findProject(home, join(a, 'nested')))).toEqual({ root: join(a, 'nested'), config: { join: 'auto', allow: 'all' } })
   await policy(b, { join: 'off' })
   expect(unwrap(await readProject(home, b))).toEqual({ join: 'off', allow: 'all' })
-  expect(projectAllows({ root: b, config: unwrap(await readProject(home, b)) }, contact)).toBeFalse()
+  expect(hasPermission(unwrap(await readProject(home, b)), contact)).toBeFalse()
   await policy(a, { allow: [] })
   expect(unwrap(await readProject(home, a)).allow).toEqual([])
 })
@@ -117,8 +117,8 @@ test('policy edits are exclusive and cannot silently narrow all or overwrite con
   const results = await Promise.all([editAllow(home, a, contact, true), editAllow(home, a, other, true)])
   const config = unwrap(await readProject(home, a))
   expect(results.some(result => result.ok)).toBeTrue()
-  expect(projectAllows({ root: a, config }, contact)).toBe(results[0].ok)
-  expect(projectAllows({ root: a, config }, other)).toBe(results[1].ok)
+  expect(hasPermission(config, contact)).toBe(results[0].ok)
+  expect(hasPermission(config, other)).toBe(results[1].ok)
   unwrap(await editAllow(home, a, 'all', true))
   expect((await editAllow(home, a, contact, false)).ok).toBeFalse()
   expect(unwrap(await readProject(home, a)).allow).toBe('all')

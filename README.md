@@ -18,7 +18,7 @@ Setup installs skills and startup hooks for detected hosts. Review Codex's hooks
 
 ## Try it
 
-Open Codex and Claude in **the same checkout folder**, then ask both to use the `undercurrent` skill. Give one a change to make and the other the review role.
+Open Codex and Claude in **the same repository or its linked worktrees**, then ask both to use the `undercurrent` skill. Give one a change to make and the other the review role.
 
 Have each agent run these through its own tools:
 
@@ -53,7 +53,7 @@ Global setup defaults to:
 { "join": "auto", "allow": ["self"] }
 ```
 
-Conversations register automatically and may message others in the same project. Separate worktrees count as different projects. Existing settings are preserved.
+Conversations register automatically. `self` includes the same repository's linked worktrees; each checkout's policy still applies. Separate clones stay separate. Existing settings are preserved.
 
 Global defaults live in `~/.undercurrent/config.json`; a project's `.undercurrent.json` overrides them. Set `join` to `manual` for explicit registration or `off` to disable participation. `uc config` shows the effective policy.
 

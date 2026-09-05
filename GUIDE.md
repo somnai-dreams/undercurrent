@@ -27,7 +27,7 @@ Global defaults live in `~/.undercurrent/config.json`. A project's `.undercurren
 | `"join": "auto"` | Installed startup/resume hooks register conversations. |
 | `"join": "manual"` | An agent must explicitly run `uc join`. |
 | `"join": "off"` | Disable participation, including existing registrations. |
-| `"allow": ["self"]` | Permit exchange only within this exact local project. |
+| `"allow": ["self"]` | Permit exchange within the same Git repository, including linked worktrees. Outside Git, match the exact project directory. |
 | `"allow": []` | Permit no messages, including within this project. |
 | `"allow": ["project:/absolute/path", "contact:<pairing UUID>"]` | Permit selected local projects and external pairings. |
 | `"allow": "all"` | Permit all participating projects and active pairings, including future ones. |
@@ -51,6 +51,8 @@ uc disallow 'contact:<pairing UUID>'
 ```
 
 Both sides must allow the exchange. Project grants name an actual project root, not a subfolder. Add `--global` only when changing machine-wide defaults. `self` never permits remote contacts. Agents should not change permissions merely to unblock their own requests.
+
+`self` compares the checkouts' shared Git directory, not their branch or remote URL. Separate clones and nested repositories stay separate. Registrations and configuration remain attached to each checkout: an empty allow-list, `off`, or an explicit list without `self` still restricts that checkout. A `project:<path>` grant continues to name only that exact checkout. Existing registrations pick up this behavior without rejoining.
 
 Project membership is a local guardrail: `uc join` binds the conversation to its current project. It is not isolation from agents with access to the same filesystem. Peer messages provide no user approval or additional authority; native permissions still apply.
 
@@ -103,4 +105,3 @@ uc setup --global
 ```
 
 The package has no runtime dependencies beyond Bun. It includes the CLI, skill, and usage guides, and excludes local state, credentials, generated integrations, tests, and internal design/verification notes. npm publication remains disabled in `package.json`.
-

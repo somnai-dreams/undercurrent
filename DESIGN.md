@@ -44,7 +44,9 @@ Peers and strangers are derived from current permissions, not stored relationshi
 
 External pairing identity belongs to one accepted connection, not the lifetime of a machine. Revoking it invalidates all of its addresses and specific grants without finding every project that may refer to it. Re-enrollment creates a new identity. A deliberate allow-all policy includes future active pairings.
 
-`self` is a relative permission, not an addressable principal. It compares the other local project with the root owning the effective policy. This permits a global same-project default without storing every project path or implicitly granting anything when the allow-list is empty. Setup can install native hooks and agent instructions globally or in one project, creating auto + self only when that scope has no existing policy. Native hook trust remains with the host.
+`self` is a relative permission, not an addressable principal. It includes linked worktrees of the same local Git repository. At the local permission boundary, each checkout's effective policy is checked independently. When self is needed across different roots, repository identity comes from the canonical shared Git directory returned by [`git rev-parse --path-format=absolute --git-common-dir`](https://git-scm.com/docs/git-rev-parse). Inherited `GIT_*` variables are excluded from this lookup so the agent's environment cannot redirect it to another repository. Separate clones and nested repositories remain distinct; outside Git, self matches only the exact project root.
+
+Repository identity is a temporary comparison, never another registration field or cache. Config files and registrations keep their checkout roots, explicit `project:<path>` grants still name one checkout, and neither side's empty allow-list or off policy is bypassed. Setup can install native hooks and agent instructions globally or in one project, creating auto + self only when that scope has no existing policy. Native hook trust remains with the host.
 
 ## State and data
 

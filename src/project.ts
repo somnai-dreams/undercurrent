@@ -23,10 +23,9 @@ export function formatPermission(principal: Permission): string {
     case 'contact': return `contact:${principal.id}`
   }
 }
-export function projectAllows(project: Project, principal: Principal): boolean {
-  const config = project.config
-  return config.join !== 'off' && (config.allow === 'all' || config.allow.some(item =>
-    item.kind === 'self' ? principal.kind === 'project' && principal.root === project.root : formatPermission(item) === formatPermission(principal)))
+export function hasPermission(config: ProjectConfig, permission: Permission): boolean {
+  const target = formatPermission(permission)
+  return config.join !== 'off' && (config.allow === 'all' || config.allow.some(item => formatPermission(item) === target))
 }
 
 export async function findProject(home: string, cwd: string): Promise<Result<Project>> {
@@ -71,10 +70,45 @@ export async function authorizeLocal(home: string, from: string, to: string): Pr
   const [sender, recipient] = await Promise.all([readProject(home, from), readProject(home, to)])
   if (!sender.ok) return sender
   if (!recipient.ok) return recipient
-  for (const [root, config, other] of [[from, sender.value, to], [to, recipient.value, from]] as const) {
-    if (!projectAllows({ root, config }, { kind: 'project', root: other })) return fail(`Project ${root} does not allow messages with ${other}. Its owner can run uc allow ${quote(`project:${other}`)} from ${root}. No message was submitted.`, 'not-allowed')
+  const scopes = [[from, sender.value, to], [to, recipient.value, from]] as const
+  const needsSelf = scopes.filter(([, config, other]) => !hasPermission(config, { kind: 'project', root: other }))
+  for (const [root, config, other] of needsSelf) {
+    if (!hasPermission(config, { kind: 'self' })) return denied(root, other)
   }
-  return { ok: true, value: undefined }
+  if (needsSelf.length === 0 || from === to) return { ok: true, value: undefined }
+
+  // Repository identity is derived only for this permission check. Registrations and
+  // configuration keep their checkout roots, so each side's overrides still apply.
+  const [sourceRepository, targetRepository] = await Promise.all([gitRepository(from), gitRepository(to)])
+  if (!sourceRepository.ok) return sourceRepository
+  if (!targetRepository.ok) return targetRepository
+  if (sourceRepository.value !== null && sourceRepository.value === targetRepository.value) return { ok: true, value: undefined }
+  const [root, , other] = needsSelf[0]!
+  return denied(root, other)
+}
+
+async function gitRepository(root: string): Promise<Result<string | null>> {
+  // Agent tools can inherit Git's repository overrides. Discovery must follow root.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+  try {
+    const child = Bun.spawn(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: root, env: { ...env, LC_ALL: 'C' },
+      stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 2000, killSignal: 'SIGKILL',
+    })
+    const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+    if (exit !== 0) {
+      if (stderr.startsWith('fatal: not a git repository')) return { ok: true, value: null }
+      const diagnostic = stderr.trim()
+      return fail(`Cannot identify Git repository for ${root}: ${diagnostic.length === 0 ? `git exited with ${exit}` : diagnostic}`)
+    }
+    const path = stdout.replace(/\r?\n$/, '')
+    if (!isAbsolute(path) || /\p{Cc}/u.test(path)) return fail(`Git returned an invalid repository directory for ${root}.`)
+    return { ok: true, value: await realpath(path) }
+  } catch (error) { return fail(`Cannot identify Git repository for ${root}: ${errorText(error)}`) }
+}
+
+function denied(root: string, other: string): Failure {
+  return fail(`Project ${root} does not allow messages with ${other}. Its owner can run uc allow ${quote(`project:${other}`)} from ${root}. No message was submitted.`, 'not-allowed')
 }
 export async function initializePolicy(home: string, cwd: string, global: boolean, initial: ProjectConfig = global ? defaults : { join: 'auto', allow: [{ kind: 'self' }] }): Promise<Result<string>> {
   let path = join(home, 'config.json')

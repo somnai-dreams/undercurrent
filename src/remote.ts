@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { addressOf, formatAddress, parseNativeAddress } from './data.ts'
 import type { Address, Failure, Registration, Result } from './data.ts'
 import { listPeers, resolvePeer } from './registry.ts'
-import { projectAllows, readProject } from './project.ts'
+import { hasPermission, readProject } from './project.ts'
 import {
   decodeInvitation, encodeInvitation, maxFrameBytes, parseContacts, parseDelivery,
   parseIdentity, parseRemoteId, parseRemoteResult, validateOrigin,
@@ -273,7 +273,7 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
 async function projectShares(home: string, registration: Registration, contactId: string): Promise<Result<boolean>> {
   const config = await readProject(home, registration.projectRoot)
   if (!config.ok) return config
-  return { ok: true, value: projectAllows({ root: registration.projectRoot, config: config.value }, { kind: 'contact', id: contactId }) }
+  return { ok: true, value: hasPermission(config.value, { kind: 'contact', id: contactId }) }
 }
 
 async function withSetup<T>(home: string, run: () => Promise<Result<T>>): Promise<Result<T>> {

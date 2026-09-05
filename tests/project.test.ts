@@ -54,11 +54,14 @@ test('configuration follows canonical roots and never silently accepts stale fie
   await policy(a, { join: 'manual', allow: [] })
   expect(unwrap(await findProject(home, alias)).root).toBe(a)
   expect((await readProject(home, alias)).ok).toBeFalse()
-  for (const value of [{ join: 'auto', share: [] }, { allow: ['reviewer'] }, { allow: ['contact:../outside'] }, { join: 'sometimes' }, { allow: [`contact:${contact.id}`, `contact:${contact.id.toUpperCase()}`] }]) {
+  for (const value of [{ join: 'auto', share: [] }, { allow: ['reviewer'] }, { allow: ['contact:../outside'] }, { join: 'sometimes' }, { allow: [`contact:${contact.id}`, `contact:${contact.id.toUpperCase()}`] }, { allow: [`project:${a}`, `project:${a}/`] }]) {
     await policy(a, value)
     expect((await readProject(home, a)).ok).toBeFalse()
   }
   expect(parsePrincipal(`contact:${contact.id.toUpperCase()}`)).toEqual({ ok: true, value: contact })
+  expect(parsePrincipal('project:////')).toEqual({ ok: true, value: { kind: 'project', root: '/' } })
+  await policy(a, { join: 'auto', allow: [`project:${a}///`] })
+  expect((await authorizeLocal(home, a, a)).ok).toBeTrue()
   await writeFile(join(home, 'config.json'), '{broken')
   await policy(a, { join: 'auto', allow: 'all' })
   expect((await readProject(home, a)).ok).toBeFalse()

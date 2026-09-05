@@ -18,6 +18,45 @@ afterEach(async () => {
 })
 
 describe('CLI', () => {
+  test('permission commands reject subdirectories and files without changing the allow-list', async () => {
+    const fixture = await makeFixture()
+    const subdirectory = join(fixture.home, 'src')
+    const file = join(fixture.home, 'notes.txt')
+    await mkdir(subdirectory)
+    await writeFile(file, 'A file cannot identify a project.')
+    const path = join(fixture.home, '.undercurrent.json')
+    const before = await readFile(path, 'utf8')
+    for (const command of ['allow', 'disallow']) {
+      const result = await run(fixture, {}, [command, `project:${subdirectory}`])
+      expect(result.exitCode).toBe(1)
+      expect(output(result)).toMatchObject({ kind: 'invalid-input' })
+      expect(result.stdout).toContain(`project:${fixture.home}`)
+      expect((await run(fixture, {}, [command, `project:${file}`])).exitCode).toBe(1)
+      expect(await readFile(path, 'utf8')).toBe(before)
+    }
+  })
+
+  test('discovery follows the registered project after cd, using cwd only when unattached', async () => {
+    const fixture = await joinedPair()
+    const nested = join(fixture.home, 'nested')
+    await mkdir(join(nested, '.git'), { recursive: true })
+    await writeFile(join(nested, '.undercurrent.json'), JSON.stringify({ join: 'auto', allow: 'all' }))
+    expect((await run(fixture, { CODEX_THREAD_ID: third }, ['join', '--name', 'nested'], { cwd: nested })).exitCode).toBe(0)
+    const identity = { CODEX_THREAD_ID: sender }
+    const listed = await run(fixture, identity, ['peers'], { cwd: nested })
+    expect(listed.exitCode).toBe(0)
+    expect(output(listed)).toMatchObject({ peers: [{ name: 'nested', relation: 'stranger' }, { name: 'review', relation: 'peer' }, { name: 'sender', relation: 'peer' }] })
+    expect((await run(fixture, identity, ['send', 'review', 'Same registered project.'], { cwd: nested })).exitCode).toBe(0)
+    for (const unattached of [{}, { CODEX_THREAD_ID: replyId }]) {
+      expect(output(await run(fixture, unattached, ['peers'], { cwd: nested }))).toMatchObject({ peers: [{ name: 'nested', relation: 'peer' }, { name: 'review', relation: 'stranger' }, { name: 'sender', relation: 'stranger' }] })
+    }
+    const ambiguous = await run(fixture, { ...identity, CLAUDE_CODE_SESSION_ID: recipient, CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/fixture.sock' }, ['peers'], { cwd: nested })
+    expect(output(ambiguous)).toMatchObject({ status: 'failed', kind: 'ambiguous' })
+    await writeFile(join(fixture.home, '.undercurrent.json'), JSON.stringify({ join: 'off', allow: 'all' }))
+    expect(output(await run(fixture, identity, ['peers'], { cwd: nested }))).toMatchObject({ peers: [{ name: 'nested', relation: 'stranger' }] })
+    expect((await run(fixture, identity, ['send', 'nested', 'Disabled project.'], { cwd: nested })).exitCode).toBe(1)
+  })
+
   test('strangers are visible, one-sided permission cannot send, and allow only edits the caller project', async () => {
     const fixture = await makeFixture()
     const other = join(fixture.home, 'other-project')

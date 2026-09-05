@@ -2,7 +2,7 @@
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { currentDestination } from './current.ts'
+import { currentDestination, discoveryProject } from './current.ts'
 import { addressOf, formatAddress } from './data.ts'
 import type { Failure, Provider, Registration, Result } from './data.ts'
 import { joinPeer, leavePeer, listPeers, resolvePeer } from './registry.ts'
@@ -156,7 +156,7 @@ async function main(args: string[]): Promise<number> {
   if (command.value.kind === 'peers') {
     const peers = await listPeers(home)
     if (!peers.ok) return fail(peers)
-    const project = await findProject(home, process.cwd())
+    const project = await discoveryProject(home, process.cwd())
     if (!project.ok) return fail(project)
     const output = []
     for (const peer of peers.value) {

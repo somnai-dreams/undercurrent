@@ -89,8 +89,7 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
   if (nameOrAddress.includes(':')) {
     const parsed = parseAddress(nameOrAddress)
     if (!parsed.ok) return parsed
-    const filename = registrationFilename(parsed.value)
-    const registration = await readRegistration(join(home, 'peers', filename), filename)
+    const registration = await readPeer(home, parsed.value)
     if (!registration.ok) return registration
     const enabled = await enabledProject(home, registration.value)
     if (!enabled.ok) return enabled
@@ -108,6 +107,13 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
     return { ok: false, error: { kind: 'ambiguous', message: `More than one peer is named ${JSON.stringify(nameOrAddress)}. Use an exact address: ${addresses}.` } }
   }
   return { ok: true, value: first }
+}
+
+export async function readPeer(home: string, address: Address): Promise<Result<Registration>> {
+  const parsed = parseAddress(formatAddress(address))
+  if (!parsed.ok) return parsed
+  const filename = registrationFilename(parsed.value)
+  return readRegistration(join(home, 'peers', filename), filename)
 }
 
 async function readRegistration(path: string, filename: string): Promise<Result<Registration>> {

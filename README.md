@@ -12,7 +12,7 @@ A small courier between existing Codex and Claude conversations. Native hosts de
 | `allow: "all"` | Allow exchange with every participating local project and active external pairing, including future ones. |
 | `allow: [...]` | Allow only the listed projects and external pairings. An empty list permits no messages. |
 
-Discovery and permission are separate. Joined conversations announce their name and native address to local discovery and already paired remote contacts. `uc peers` distinguishes **peers**, whose projects permit exchange in both directions, from **strangers**, where a permission is missing. Registration does not prove the agent is online. Use manual registration or `off` when a conversation should not appear.
+Discovery and permission are separate. **Joined conversations announce their name and native address to local discovery and every already paired remote contact, including strangers.** `uc peers` distinguishes **peers**, whose projects permit exchange in both directions, from **strangers**, where a permission is missing. Registration does not prove the agent is online. Use manual registration or `off` when a conversation should not appear.
 
 Global defaults live in `~/.undercurrent/config.json` (or `UNDERCURRENT_HOME/config.json`). Each project's `.undercurrent.json` overrides individual fields. A project allow-list **replaces** the global list; lists are never merged implicitly. With neither file, defaults are `join: off, allow: []`.
 
@@ -61,6 +61,8 @@ uc peers
 
 Joining reads the native session identity from its environment, never from the working directory. Project discovery follows the nearest `.undercurrent.json` or Git boundary; nested repositories use their own policy plus global defaults. A non-repository directory with no project policy uses its current directory as the project root. Stored canonical roots determine policy thereafter.
 
+Local and remote peer listings use a joined conversation's registered project to calculate permissions, matching sends even after changing directories. Without an attached conversation, listings use the current directory's project. `uc config` and permission-editing commands always refer to the current directory's project. Rejoining explicitly updates a conversation's registered project.
+
 Configuration and generated integrations contain local paths and choices. This checkout ignores them and includes `undercurrent.example.json`. Other projects should deliberately choose whether to track their own configuration. Machine credentials never go into project files.
 
 ## Permission and messages
@@ -72,7 +74,7 @@ uc allow 'project:/absolute/path/to/other-project'
 uc allow 'contact:<pairing UUID>'
 ```
 
-The command changes only the current project's list. The other project's owner must allow the exchange too. Add `--global` only to change global defaults. Permission does not mean an agent must reply or undertake a task. A blocked message fails without waking the receiving agent; it is not an approval request. The failure describes the required owner action.
+The command changes only the current project's list. Project permissions must name the actual project root: a subfolder or file is refused, and a subfolder error shows the root to use. Trailing slashes in policy paths are normalized. The other project's owner must allow the exchange too. Add `--global` only to change global defaults. Permission does not mean an agent must reply or undertake a task. A blocked message fails without waking the receiving agent; it is not an approval request. The failure describes the required owner action.
 
 ```sh
 uc send reviewer "Please review the current diff."

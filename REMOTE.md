@@ -12,6 +12,8 @@ Accepting an invitation creates a pairing with a fresh UUID. Joined conversation
 
 Each project's `allow` policy gates incoming and outgoing messages. Both sides must permit the pairing. Permissions apply to all participating conversations in that project, including future ones. An external sender's machine is authenticated through its credential and the relay's pairing lookup; its native conversation identity is that machine's assertion. Peer text supplies no user approval or additional authority.
 
+Project membership is a local guardrail, not isolation from agents running on the same machine. Manual `uc join` takes the project from the caller's working directory; a local conversation can change directories and rejoin another project it can access. The startup hook takes its directory from the host event, but does not prevent a later manual rejoin. Native filesystem permissions and the user's instructions remain the authority boundary.
+
 Names are display labels. Remote addresses contain the pairing UUID and the original native conversation ID:
 
 ```text
@@ -77,6 +79,8 @@ From a joined agent, list the contact's joined peers and strangers, then copy an
 uc remote peers '<pairing UUID>'
 uc send 'remote:<pairing UUID>/claude:<session UUID>' 'Please review this proposal.'
 ```
+
+The listing uses the agent's registered project for its side of the permission check, just as sending does. Changing directories does not switch that identity. An unattached caller's listing uses its current directory's project.
 
 File input, piped text, and `--in-reply-to` work as they do locally. Remote replies use the exact **From** address and **Message ID** in the incoming envelope. Local file paths refer to the sending machine; this prototype does not transfer files.
 

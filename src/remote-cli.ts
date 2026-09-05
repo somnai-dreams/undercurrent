@@ -7,7 +7,8 @@ import {
 } from './remote.ts'
 import { formatRemoteAddress } from './remote-protocol.ts'
 import { errorText, isToken } from './validation.ts'
-import { findProject, projectAllows } from './project.ts'
+import { projectAllows } from './project.ts'
+import { discoveryProject } from './current.ts'
 
 type RemoteCommand =
   | { kind: 'init'; origin: string }
@@ -53,10 +54,10 @@ export async function runRemoteCommand(home: string, args: string[]): Promise<nu
       return 0
     }
     case 'peers': {
+      const project = await discoveryProject(home, process.cwd())
+      if (!project.ok) return fail(project)
       const result = await remotePeers(home, command.contactId)
       if (!result.ok) return fail(result)
-      const project = await findProject(home, process.cwd())
-      if (!project.ok) return fail(project)
       const allowed = projectAllows(project.value.config, { kind: 'contact', id: command.contactId.toLowerCase() })
       console.log(JSON.stringify({ peers: result.value.map(peer => ({ name: peer.name, address: formatRemoteAddress({ provider: 'remote', contactId: command.contactId.toLowerCase(), peer: peer.address }), relation: peer.allowed && allowed ? 'peer' : 'stranger' })) }))
       return 0

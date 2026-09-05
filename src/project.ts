@@ -1,5 +1,5 @@
 import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, normalize } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { Failure, Result } from './data.ts'
 import { errorText, isObject, isUuid } from './validation.ts'
 
@@ -11,7 +11,7 @@ const defaults: ProjectConfig = { join: 'off', allow: [] }
 
 export function parsePrincipal(text: string): Result<Principal> {
   if (text.startsWith('contact:') && isUuid(text.slice(8))) return { ok: true, value: { kind: 'contact', id: text.slice(8).toLowerCase() } }
-  if (text.startsWith('project:') && isAbsolute(text.slice(8)) && !/\p{Cc}/u.test(text)) return { ok: true, value: { kind: 'project', root: normalize(text.slice(8)) } }
+  if (text.startsWith('project:') && isAbsolute(text.slice(8)) && !/\p{Cc}/u.test(text)) return { ok: true, value: { kind: 'project', root: resolve(text.slice(8)) } }
   return fail('Use project:<absolute project path> or contact:<pairing UUID>.', 'invalid-input')
 }
 export function formatPrincipal(principal: Principal): string {
@@ -95,6 +95,9 @@ export async function editAllow(home: string, root: string | null, principal: Pr
     if (principal.kind === 'project') {
       try { principal = { kind: 'project', root: await realpath(principal.root) } }
       catch (error) { return fail(`Cannot locate allowed project: ${errorText(error)}`) }
+      const project = await findProject(home, principal.root)
+      if (!project.ok) return project
+      if (project.value.root !== principal.root) return fail(`Permissions name a project root, not a subdirectory. Use ${quote(`project:${project.value.root}`)}. No permission was changed.`, 'invalid-input')
     }
   }
   if (root !== null) {

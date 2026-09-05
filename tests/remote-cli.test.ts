@@ -65,8 +65,17 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
     const renamedPeers = await run(first, ['remote', 'peers', contactId])
     expect(JSON.parse(renamedPeers.stdout) as unknown).toEqual({ peers: [{ name: 'renamed', address: secondAddress, relation: 'peer' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
 
+    const nested = join(first, 'project', 'nested')
+    await mkdir(join(nested, '.git'), { recursive: true })
+    const attachedPeers = await run(first, ['remote', 'peers', contactId], nativeId, nested)
+    expect(attachedPeers.exitCode).toBe(0)
+    expect(JSON.parse(attachedPeers.stdout) as unknown).toEqual(JSON.parse(renamedPeers.stdout) as unknown)
+    const unattachedPeers = await run(first, ['remote', 'peers', contactId], undefined, nested)
+    expect(unattachedPeers.exitCode).toBe(0)
+    expect(JSON.parse(unattachedPeers.stdout) as unknown).toEqual({ peers: [{ name: 'renamed', address: secondAddress, relation: 'stranger' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
+
     const text = 'λ 🦉 "quotes" \'single\' `backticks` $(not-a-command) $HOME\nsecond line — keep Unicode and punctuation'
-    const sent = await run(first, ['send', secondAddress, text], nativeId)
+    const sent = await run(first, ['send', secondAddress, text], nativeId, nested)
     expect(sent.exitCode).toBe(0)
     expect(field(sent, 'evidence')).toBe('codex-queue')
     const received = await captured(second)
@@ -100,9 +109,9 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
 
 type CommandResult = { exitCode: number; stdout: string; stderr: string }
 
-async function run(home: string, args: string[], threadId?: string): Promise<CommandResult> {
+async function run(home: string, args: string[], threadId?: string, cwd?: string): Promise<CommandResult> {
   const child = Bun.spawn([process.execPath, join(project, 'src/cli.ts'), ...args], {
-    cwd: join(home, threadId === hiddenId ? 'private-project' : 'project'),
+    cwd: cwd ?? join(home, threadId === hiddenId ? 'private-project' : 'project'),
     env: {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
       UNDERCURRENT_HOME: home,

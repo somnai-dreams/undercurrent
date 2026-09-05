@@ -1,5 +1,19 @@
-import { parseDestination } from './data.ts'
+import { addressOf, parseDestination } from './data.ts'
 import type { Destination, Result } from './data.ts'
+import { findProject, readProject } from './project.ts'
+import type { Project } from './project.ts'
+import { readPeer } from './registry.ts'
+
+export async function discoveryProject(home: string, cwd: string, env: Readonly<Record<string, string | undefined>> = process.env): Promise<Result<Project>> {
+  if (env['CODEX_THREAD_ID'] === undefined && env['CLAUDE_CODE_SESSION_ID'] === undefined && env['CLAUDE_CODE_MESSAGING_SOCKET'] === undefined) return findProject(home, cwd)
+  const current = currentDestination(env)
+  if (!current.ok) return current
+  const registration = await readPeer(home, addressOf(current.value))
+  if (!registration.ok) return registration.error.kind === 'not-found' ? findProject(home, cwd) : registration
+  const root = registration.value.projectRoot
+  const config = await readProject(home, root)
+  return config.ok ? { ok: true, value: { root, config: config.value } } : config
+}
 
 export function currentDestination(env: Readonly<Record<string, string | undefined>> = process.env): Result<Destination> {
   const threadId = env['CODEX_THREAD_ID']

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { initializePolicy } from '../src/project.ts'
@@ -45,6 +45,7 @@ test('resume refreshes Claude socket and preserves descriptions; only session en
   expect((await runHook(home, 'codex', event(root, second), {})).ok).toBeTrue()
   const resumed = await runHook(home, 'claude', event(root), { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/new.sock' })
   expect(resumed.ok && resumed.value).toContain(`claude:${first}`)
+  expect(await runHook(home, 'claude', event(root), { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/new.sock' })).toEqual({ ok: true, value: null })
   const peers = await listPeers(home)
   expect(peers.ok && peers.value).toContainEqual({ name: 'reviewer', about: 'Reviewing transport', projectRoot: root, destination: { provider: 'claude', sessionId: first, socketPath: '/tmp/new.sock' } })
   expect((await runHook(home, 'claude', event(root, first, 'Stop'), {})).ok).toBeFalse()
@@ -54,6 +55,23 @@ test('resume refreshes Claude socket and preserves descriptions; only session en
   const remaining = await listPeers(home)
   expect(remaining.ok && remaining.value.length).toBe(1)
   expect(remaining.ok && remaining.value[0]?.destination).toEqual({ provider: 'codex', threadId: second })
+})
+
+test('repeated startup is quiet for an existing destination but announces a changed project', async () => {
+  const { root, home } = await fixture()
+  const other = join(root, 'other')
+  await mkdir(join(other, '.git'), { recursive: true })
+  expect((await initializePolicy(home, root, false)).ok).toBeTrue()
+  expect((await initializePolicy(home, other, false)).ok).toBeTrue()
+  for (const provider of ['codex', 'claude'] as const) {
+    const env = { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/repeated.sock' }
+    const firstRun = await runHook(home, provider, event(root), env)
+    expect(firstRun.ok && firstRun.value).toContain(`${provider}:${first}`)
+    expect(await runHook(home, provider, event(root), env)).toEqual({ ok: true, value: null })
+    const moved = await runHook(home, provider, event(other), env)
+    expect(moved.ok && moved.value).toContain(`${provider}:${first}`)
+    expect(await runHook(home, provider, event(other), env)).toEqual({ ok: true, value: null })
+  }
 })
 
 test('malformed identity, conflicting environment, absent Claude socket and broken policy cannot enroll', async () => {
@@ -74,6 +92,31 @@ test('disabling policy removes this registration at next startup and never regis
   await writeFile(join(root, '.undercurrent.json'), JSON.stringify({ join: 'off', allow: [] }))
   expect(await runHook(home, 'codex', event(root), {})).toEqual({ ok: true, value: null })
   expect(await listRegistrations(home)).toEqual({ ok: true, value: [] })
+})
+
+test('an unmanaged skill has an explicit backup recovery; only the exact legacy hook is upgraded', async () => {
+  const { root, home } = await fixture()
+  const scope = { kind: 'project', root } as const
+  const installed = await installIntegration(home, scope, 'claude')
+  if (!installed.ok) throw new Error(installed.error.message)
+  const { hooks, skill } = installed.value
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+  const oldCommand = [process.execPath, join(import.meta.dir, '../src/cli.ts'), 'hook', 'claude'].map(quote).join(' ')
+  const unrelated = "'/another/tool/cli.ts' 'hook' 'claude'"
+  await writeFile(hooks, JSON.stringify({ hooks: { SessionStart: [{ hooks: [oldCommand, unrelated].map(command => ({ type: 'command', command })) }] } }))
+  const before = await readFile(hooks, 'utf8')
+  await writeFile(skill, 'An unmarked earlier skill or personal instructions.\n')
+  const refused = await installIntegration(home, scope, 'claude')
+  expect(refused.ok).toBeFalse()
+  expect(!refused.ok && refused.error.message).toContain(`${skill}.undercurrent-previous`)
+  expect(await readFile(hooks, 'utf8')).toBe(before)
+  await rename(skill, `${skill}.undercurrent-previous`)
+  expect((await installIntegration(home, scope, 'claude')).ok).toBeTrue()
+  expect(await readFile(`${skill}.undercurrent-previous`, 'utf8')).toBe('An unmarked earlier skill or personal instructions.\n')
+  const updated = await readFile(hooks, 'utf8')
+  expect(updated).toContain(JSON.stringify(unrelated))
+  expect(updated).not.toContain(JSON.stringify(oldCommand))
+  expect(updated.match(/# undercurrent:claude/g)).toHaveLength(2)
 })
 
 test('project installer preserves other hooks/settings, is repeatable, and its actual command consumes native-shaped events', async () => {

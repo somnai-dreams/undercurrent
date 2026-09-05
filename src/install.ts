@@ -17,7 +17,12 @@ export function nativeHomes(env: Readonly<Record<string, string | undefined>> = 
 }
 
 export async function installIntegration(home: string, scope: InstallScope, provider: Provider): Promise<Result<Installation>> {
-  const root = scope.kind === 'project' ? scope.root : scope.homes[provider]
+  let root = scope.kind === 'project' ? scope.root : scope.homes[provider]
+  if (scope.kind === 'global') {
+    // The user's native configuration directory may itself live in a dotfiles checkout.
+    try { root = await realpath(root) }
+    catch (error) { if (!hasErrorCode(error, 'ENOENT')) return failure(`Cannot locate global configuration: ${errorText(error)}`) }
+  }
   const path = scope.kind === 'project'
     ? join(root, provider === 'codex' ? '.codex/hooks.json' : '.claude/settings.local.json')
     : join(root, provider === 'codex' ? 'hooks.json' : 'settings.json')
@@ -73,7 +78,9 @@ export async function installIntegration(home: string, scope: InstallScope, prov
     let existing: string | null = null
     try { existing = await readFile(skill, 'utf8') }
     catch (error) { if (!hasErrorCode(error, 'ENOENT')) throw error }
-    if (existing !== null && existing !== skillText && !uneditedManagedSkill(existing)) return failure(`An existing skill at ${skill} has local edits or is unmanaged. Review it before replacing it; hooks were not changed.`)
+    if (existing !== null && existing !== skillText && !uneditedManagedSkill(existing)) {
+      return failure(`An existing skill at ${skill} has local edits or is unmanaged. Hooks were not changed. Review the file; to back it up before replacing it, run mv -i ${shellQuote(skill)} ${shellQuote(`${skill}.undercurrent-previous`)}, then rerun setup.`)
+    }
     await writeAtomic(skill, `${skillText}\n<!-- undercurrent-managed:${digest(skillText)} -->\n`)
     await writeAtomic(path, `${JSON.stringify({ ...raw, hooks }, null, 2)}\n`)
     return { ok: true, value: { provider, root, hooks: path, skill } }

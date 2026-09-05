@@ -94,12 +94,14 @@ test('setup upgrades its hooks and unedited instructions, preserving policy and 
   const before = await readFile(integration.hooks, 'utf8')
   const edited = `${await readFile(integration.skill, 'utf8')}\nMy custom instructions.\n`
   await writeFile(integration.skill, edited)
-  expect((await setup(home, project, options, env)).ok).toBeFalse()
+  const refused = await setup(home, project, options, env)
+  expect(refused.ok).toBeFalse()
+  expect(!refused.ok && refused.error.message).toContain(`mv -i '${integration.skill}' '${integration.skill}.undercurrent-previous'`)
   expect(await readFile(integration.skill, 'utf8')).toBe(edited)
   expect(await readFile(integration.hooks, 'utf8')).toBe(before)
 })
 
-test('global host detection has no side effects when none exist and installation refuses symlinked targets', async () => {
+test('global host detection has no side effects when none exist; native homes can be symlinks but hook files cannot', async () => {
   const { root, project, home, env } = await fixture()
   expect((await setup(home, project, { global: true, hosts: 'auto' }, env)).ok).toBeFalse()
   expect(await Bun.file(join(home, 'config.json')).exists()).toBeFalse()
@@ -111,8 +113,18 @@ test('global host detection has no side effects when none exist and installation
   const sentinel = join(outside, 'hooks.json')
   await writeFile(sentinel, '{"untouched":true}')
   await symlink(outside, env.CODEX_HOME)
-  expect((await setup(home, project, { global: true, hosts: 'codex' }, env)).ok).toBeFalse()
-  expect(await readFile(sentinel, 'utf8')).toBe('{"untouched":true}')
+  const options = { global: true, hosts: 'codex' } as const
+  const installed = unwrap(await setup(home, project, options, env)).installations[0]!
+  expect(installed.root).toBe(outside)
+  expect(installed.hooks).toBe(sentinel)
+  expect(JSON.parse(await readFile(sentinel, 'utf8')) as unknown).toMatchObject({ untouched: true })
+  expect((await setup(home, project, options, env)).ok).toBeTrue()
+  const unrelated = join(root, 'unrelated.json')
+  await writeFile(unrelated, '{"untouched":true}')
+  await rm(sentinel)
+  await symlink(unrelated, sentinel)
+  expect((await setup(home, project, options, env)).ok).toBeFalse()
+  expect(await readFile(unrelated, 'utf8')).toBe('{"untouched":true}')
 })
 
 test('global installation supports a shared skills directory but refuses redirected individual skills', async () => {

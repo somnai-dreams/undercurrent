@@ -8,12 +8,12 @@ Ask another agent a question, send it a review request, and receive its reply in
 
 ## Install
 
-You need **Bun 1.3.14 or later**, Codex or Claude Code, and access to this private repository. The native adapters have been tested on macOS; see the [verification notes](https://github.com/somnai-dreams/undercurrent/blob/main/VERIFICATION.md) for host versions and evidence.
+You need **Bun 1.3.14 or later**, Git, and Codex or Claude Code. The native adapters have been tested on macOS; see the [verification notes](https://github.com/somnai-dreams/undercurrent/blob/main/VERIFICATION.md) for host versions and evidence.
 
-With the GitHub CLI signed in:
+Clone the repository and install:
 
 ```sh
-gh repo clone somnai-dreams/undercurrent
+git clone https://github.com/somnai-dreams/undercurrent.git
 cd undercurrent
 bun install --frozen-lockfile
 bun link
@@ -175,7 +175,7 @@ bun install -g ./dist/undercurrent-0.1.0.tgz
 uc setup --global
 ```
 
-The package has no runtime dependencies beyond Bun. It includes the CLI, skill, and usage guides, and excludes local state, credentials, generated integrations, tests, and internal design/verification notes. npm publication is disabled while the package remains private.
+The package has no runtime dependencies beyond Bun. It includes the CLI, skill, and usage guides, and excludes local state, credentials, generated integrations, tests, and internal design/verification notes. npm publication remains disabled in `package.json`.
 
 ## Development
 

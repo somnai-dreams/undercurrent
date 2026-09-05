@@ -34,8 +34,12 @@ Then Codex can send:
 
 ```sh
 uc peers
-uc send reviewer "Please review the current diff and send your findings back."
+uc send reviewer --stdin <<'UC_MESSAGE'
+Please review the current diff and send your findings back.
+UC_MESSAGE
 ```
+
+Keep the heredoc delimiter quoted so code in messages stays literal, or use `--file` with a file written without shell interpolation.
 
 Replies use the incoming **From** address and **Message ID**:
 

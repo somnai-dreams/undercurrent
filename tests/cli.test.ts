@@ -174,6 +174,35 @@ describe('CLI', () => {
     expect((await capturedArgs(fixture))[4]!.endsWith('--literal-text')).toBeTrue()
   })
 
+  test('quoted shell heredocs keep command substitutions literal through stdin and file input', async () => {
+    const fixture = await joinedPair()
+    const text = 'Inspect `touch UC_BACKTICK_RAN` and $(touch UC_SUBSTITUTION_RAN).\nKeep "$UC_MESSAGE_TEST_VALUE", \'single quotes\', λ 🦉 and --flags literally.\n'
+    const path = join(fixture.home, 'message with spaces.txt')
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+    const command = [process.execPath, join(project, 'src/cli.ts'), 'send', 'review'].map(quote).join(' ')
+    for (const script of [
+      `${command} --stdin <<'UC_MESSAGE'\n${text}UC_MESSAGE\n`,
+      `cat > ${quote(path)} <<'UC_MESSAGE'\n${text}UC_MESSAGE\n${command} --file ${quote(path)}\n`,
+    ]) {
+      const child = Bun.spawn(['/bin/sh', '-c', script], {
+        cwd: fixture.home,
+        env: {
+          PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+          UNDERCURRENT_HOME: fixture.home, UNDERCURRENT_CODEX_BIN: fixture.executable,
+          FAKE_CODEX_CAPTURE: fixture.capture, CODEX_THREAD_ID: sender, UC_MESSAGE_TEST_VALUE: 'expanded',
+        },
+        stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
+      })
+      const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe('')
+      expect(output({ exitCode, stdout, stderr })).toMatchObject({ status: 'submitted', evidence: 'codex-queue' })
+      expect((await capturedArgs(fixture))[4]!.endsWith(text)).toBeTrue()
+      expect(await Bun.file(join(fixture.home, 'UC_BACKTICK_RAN')).exists()).toBeFalse()
+      expect(await Bun.file(join(fixture.home, 'UC_SUBSTITUTION_RAN')).exists()).toBeFalse()
+    }
+  })
+
   test('requires Claude to rejoin after its current socket changes', async () => {
     const fixture = await makeFixture()
     const original = { CLAUDE_CODE_SESSION_ID: sender, CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/undercurrent-old.sock' }

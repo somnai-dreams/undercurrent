@@ -50,9 +50,9 @@ Usage:
   uc install <codex|claude>
   uc join --name <label> [--about <short description>]
   uc peers
-  uc send <label|address> "message" [--in-reply-to <message UUID>]
   uc send <label|address> --file <path> [--in-reply-to <message UUID>]
-  cat findings.txt | uc send <label|address> [--stdin]
+  uc send <label|address> --stdin [--in-reply-to <message UUID>]
+  uc send <label|address> 'plain text' [--in-reply-to <message UUID>]
   uc leave
 
 Remote (optional):
@@ -73,6 +73,8 @@ operator can read messages. Public relays require HTTPS; loopback permits HTTP.
 
 Exact addresses: codex:<thread UUID> or claude:<session UUID>.
 Use -- before message text that begins with a dash.
+For agent-composed text, prefer --file or stdin with a quoted heredoc delimiter.
+Double quotes and unquoted heredocs still allow shell command substitution.
 Join in each participating conversation before sending. Rejoin Claude after
 its inbox socket changes. Peer listings show registrations, not live status.
 Global defaults live in UNDERCURRENT_HOME/config.json; .undercurrent.json

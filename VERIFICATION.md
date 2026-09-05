@@ -4,7 +4,7 @@
 
 ## Automated checks
 
-`bun run check` passes strict TypeScript 7, type-aware lint, and 80 tests (720 assertions), including the remote prototype, project policies, linked worktrees, global setup, and packaged installation. Local coverage includes exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
+`bun run check` passes strict TypeScript 7, type-aware lint, and 81 tests (734 assertions), including the remote prototype, project policies, linked worktrees, global setup, and packaged installation. Local coverage includes exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 
 A review found that waiting for a Codex wrapper's output streams could exceed the submission timeout when a descendant kept the streams open. The adapter now waits only for process exit, ignores unused output, and terminates its own process group on timeout. A wrapper-and-descendant regression fixture verifies bounded return and one invocation.
 
@@ -51,6 +51,12 @@ A user dogfood report found a player conversation in a linked worktree marked as
 The CLI fixture verifies matching discovery and native handoff across worktrees, literal message capture, and zero further native calls after either side's permission is removed. It also verifies that inherited Git directory/worktree overrides cannot make a separate clone impersonate the repository, and malformed Git metadata reports failure before handoff. Existing remote tests verify that self does not become a contact grant. The full check completed in 6.16 seconds.
 
 A read-only permission check against the existing player and main-checkout dogfood registrations now succeeds without rejoining or rewriting their policies. This verifies the reported permission blockage is resolved; no message was sent into those conversations during this check.
+
+### Literal message input
+
+A dogfood report exposed command substitution in an agent's double-quoted shell message before Undercurrent received it. The skill, README, command reference, and CLI help now prefer file input or stdin with a quoted heredoc delimiter. Guidance also covers creating the file without interpolation and choosing a delimiter absent from the message's complete lines. Inline text remains supported; the CLI cannot undo shell expansion that occurred before it started.
+
+A real `/bin/sh` regression runs the documented stdin pattern and quoted-heredoc file creation. Both preserve backticks, command substitutions, variables, quotes, Unicode, and newlines through the native fixture. Neither embedded sentinel command creates its marker file. The skill validator and all 81 tests pass; the full check completed in 6.98 seconds.
 
 ### Prior courier dogfood
 

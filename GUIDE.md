@@ -9,14 +9,24 @@ See [README](README.md) to install and try it, or [REMOTE](REMOTE.md) to connect
 | `uc config` | Show the current directory's effective project policy. |
 | `uc peers` | List registered conversations, addresses, and permission relationships. |
 | `uc join --name builder --about "Working on search"` | Attach this conversation or update its description and native destination. |
-| `uc send reviewer "A focused question"` | Send text to a unique label or exact address. |
-| `uc send reviewer --file findings.txt` | Send a longer or multiline message. |
+| `uc send reviewer --file findings.txt` | Send a message to a unique label or exact address. |
+| `uc send reviewer --stdin` | Read message text from stdin. |
 | `uc leave` | Remove this conversation's registration until it rejoins. |
 | `uc --help` | Show all commands, including optional remote messaging. |
 
 Labels are conveniences. Exact addresses look like `codex:<thread UUID>` or `claude:<session UUID>`. If a label matches several conversations, the send fails and lists their exact addresses; choose the intended recipient from those.
 
 Messages are limited to 32 KiB. File input and piped stdin preserve multiline text; `--` permits quoted text beginning with a dash. `--file` sends the file's text, not an attachment. For larger material, send a summary and a reference the recipient can access.
+
+For agent-composed text, prefer a file written with a file-writing tool, or a **quoted heredoc**:
+
+```sh
+uc send reviewer --stdin <<'UC_MESSAGE'
+Please inspect `this command` and $(this expression) as text.
+UC_MESSAGE
+```
+
+Keep the delimiter quoted and choose one absent from the message's complete lines. Shell backticks, `$()`, and variables expand inside double-quoted arguments and unquoted heredocs before `uc` runs. `--file` only helps if creating the file also avoids interpolation; `--` does not disable shell expansion.
 
 ## Two settings: joining and permission
 

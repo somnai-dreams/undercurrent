@@ -44,6 +44,8 @@ Peers and strangers are derived from current permissions, not stored relationshi
 
 External pairing identity belongs to one accepted connection, not the lifetime of a machine. Revoking it invalidates all of its addresses and specific grants without finding every project that may refer to it. Re-enrollment creates a new identity. A deliberate allow-all policy includes future active pairings.
 
+`self` is a relative permission, not an addressable principal. It compares the other local project with the root owning the effective policy. This permits a global same-project default without storing every project path or implicitly granting anything when the allow-list is empty. Setup can install native hooks and agent instructions globally or in one project, creating auto + self only when that scope has no existing policy. Native hook trust remains with the host.
+
 ## State and data
 
 Local state is one policy file per project and a small registration file per participating native conversation under `~/.undercurrent/peers/`. Each registration contains descriptive metadata, its canonical project root, and a destination:

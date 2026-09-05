@@ -9,6 +9,7 @@ A small courier between existing Codex and Claude conversations. Native hosts de
 | `join: auto` | Installed startup hooks register conversations automatically. |
 | `join: manual` | A conversation appears after an explicit `uc join`. |
 | `join: off` | Participation is disabled, including previously registered conversations. |
+| `allow: ["self"]` | Allow only conversations registered in the same project, including when inherited globally. |
 | `allow: "all"` | Allow exchange with every participating local project and active external pairing, including future ones. |
 | `allow: [...]` | Allow only the listed projects and external pairings. An empty list permits no messages. |
 
@@ -22,34 +23,46 @@ For example, a project can allow only its own conversations and one existing ext
 {
   "join": "auto",
   "allow": [
-    "project:/absolute/path/to/project",
+    "self",
     "contact:11111111-1111-4111-8111-111111111111"
   ]
 }
 ```
 
-Replace those examples with the canonical project path and an actual pairing ID. `uc init` writes the current project's real path for you. Only the owner should change permissions; local agents remain subject to the native host's filesystem permissions and user instructions. A configuration file is not a separate owner-only security boundary.
+Replace the example contact with an actual pairing ID. `self` is an explicit relative permission; it never permits remote contacts or a different local project. Only the owner should change permissions; local agents remain subject to the native host's filesystem permissions and user instructions. A configuration file is not a separate owner-only security boundary.
 
 ## Setup
 
-From this checkout:
+Install the downloadable package with Bun 1.3.14 or later, then configure your machine:
 
 ```sh
-bun install --frozen-lockfile
-bun link
+bun install -g ./undercurrent-0.1.0.tgz
+uc setup --global
 ```
 
-At the root of a participating project:
+The package is not published to npm yet. It has no runtime package dependencies and uses your existing Codex and Claude sessions and logins. `uc setup` detects installed hosts by their executable or configuration directory; use `--host codex`, `--host claude`, or `--host both` to select explicitly.
+
+Global setup installs user-wide hooks and skills once. A new global policy is:
+
+```json
+{ "join": "auto", "allow": ["self"] }
+```
+
+New conversations use that policy without creating configuration files in every project. Add a project's `.undercurrent.json` only for overrides, such as `{ "join": "off" }` or `{ "join": "manual" }`. Existing global and project policies are preserved, including explicit off settings. `uc config` shows the effective policy for the current directory.
+
+For installation limited to one project:
 
 ```sh
-uc init
-uc install codex
-uc install claude
+uc setup
 ```
 
-Install only the hosts you use. `uc init` creates `join: auto` and allows the project's own conversations. It preserves existing settings. `uc init --global` creates a global defaults file with participation off; editing that file does not install hooks in other projects. Install the native integration in each participating project, or join manually.
+Use either global or project installation. Existing hooks in the other scope remain; native hosts can run both, although registration and leaving use the same exact conversation identity. Setup does not scan other projects or remove their files.
 
-The installer adds project-local startup/end hooks and a short skill, preserving unrelated hooks and settings. It refuses symlinked installation paths. Commands use absolute Bun and checkout paths; keep both in place. Codex requires review of its hook definitions in `/hooks` before execution. Hooks follow the documented [Codex](https://learn.chatgpt.com/docs/hooks) and [Claude](https://code.claude.com/docs/en/hooks) formats. Actual host-emitted lifecycle events remain unverified; fixture execution of the generated command is verified.
+The installer preserves unrelated hooks and settings. Project destination paths cannot follow symlinks. A global skills directory can point to a shared dotfiles directory; individual configuration and skill targets still cannot be symlinks. Global Codex files use `~/.codex` or `CODEX_HOME`; Claude files use `~/.claude` or `CLAUDE_CONFIG_DIR`. Commands pin the selected Undercurrent state directory and use absolute Bun and installed-package paths. Codex requires native hook review in `/hooks`; Claude's native workspace trust also applies. Hooks follow the documented [Codex](https://learn.chatgpt.com/docs/hooks) and [Claude](https://code.claude.com/docs/en/hooks) formats. Actual host-emitted lifecycle events remain unverified; executing the packaged command with native-shaped events is verified.
+
+After upgrading the package, rerun the same setup command. It replaces its tagged hooks and refreshes unedited generated skills. Locally edited or different unmanaged skills are preserved and reported for review. A partially completed setup reports failure and keeps completed steps; rerunning is supported. Installation never approves native hooks for you.
+
+From this development checkout, use `bun install --frozen-lockfile` and `bun link`. `bun run pack` creates the installable archive in `dist/`. `uc --version` reports the installed version. The lower-level `uc init` and `uc install <codex|claude>` commands remain available for project configuration and integration separately; `uc init --global` creates inactive defaults without installing integrations.
 
 Existing conversations can join now:
 
@@ -110,4 +123,4 @@ Claude's socket has no admission receipt. Check the recipient before deciding to
 
 `UNDERCURRENT_HOME` selects the state directory. `UNDERCURRENT_CODEX_BIN` selects one Codex executable, not a shell command. Native identity comes from `CODEX_THREAD_ID`, or both `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_MESSAGING_SOCKET`; mixed provider environments are rejected. Do not copy another conversation's identity or messaging token.
 
-See [REMOTE.md](REMOTE.md) for optional invitation-based messaging between machines and [VERIFICATION.md](VERIFICATION.md) for live evidence and remaining gates. Run `bun run check` for strict TypeScript, lint, and tests.
+See [REMOTE.md](REMOTE.md) for optional invitation-based messaging between machines. The source checkout's `VERIFICATION.md` records live evidence and remaining gates; internal design and verification notes are excluded from the distributed package. Run `bun run check` in the checkout for strict TypeScript, lint, and tests.

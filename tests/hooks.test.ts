@@ -79,13 +79,13 @@ test('disabling policy removes this registration at next startup and never regis
 test('project installer preserves other hooks/settings, is repeatable, and its actual command consumes native-shaped events', async () => {
   const { root, home } = await fixture()
   expect((await initializePolicy(home, root, false)).ok).toBeTrue()
-  const firstInstall = await installIntegration(home, root, 'claude')
+  const firstInstall = await installIntegration(home, { kind: "project", root }, 'claude')
   if (!firstInstall.ok) throw new Error(firstInstall.error.message)
   const path = firstInstall.value.hooks
   await writeFile(path, JSON.stringify({ permissions: { allow: ['Read'] }, hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo existing' }] }] } }))
-  expect((await installIntegration(home, root, 'claude')).ok).toBeTrue()
+  expect((await installIntegration(home, { kind: "project", root }, 'claude')).ok).toBeTrue()
   const once = await readFile(path, 'utf8')
-  expect((await installIntegration(home, root, 'claude')).ok).toBeTrue()
+  expect((await installIntegration(home, { kind: "project", root }, 'claude')).ok).toBeTrue()
   expect(await readFile(path, 'utf8')).toBe(once)
   const raw: unknown = JSON.parse(once) as unknown
   expect(raw).toMatchObject({ permissions: { allow: ['Read'] } })
@@ -109,7 +109,7 @@ test('project installer preserves other hooks/settings, is repeatable, and its a
   expect(JSON.parse(stdout) as unknown).toMatchObject({ hookSpecificOutput: { hookEventName: 'SessionStart' } })
   const joined = await listPeers(home)
   expect(joined.ok && joined.value[0]?.destination).toEqual({ provider: 'claude', sessionId: first, socketPath: '/tmp/installed.sock' })
-  expect((await installIntegration(home, root, 'codex')).ok).toBeTrue()
+  expect((await installIntegration(home, { kind: "project", root }, 'codex')).ok).toBeTrue()
 })
 
 test('project installation cannot follow native config or nested skill symlinks outside the project', async () => {
@@ -121,7 +121,7 @@ test('project installation cannot follow native config or nested skill symlinks 
     await writeFile(sentinel, '{"outside":true}')
     if (target === '.agents/skills') await mkdir(join(root, '.agents'))
     await symlink(outside.root, join(root, target))
-    const installed = await installIntegration(home, root, target === '.claude' ? 'claude' : 'codex')
+    const installed = await installIntegration(home, { kind: "project", root }, target === '.claude' ? 'claude' : 'codex')
     expect(installed.ok).toBeFalse()
     expect(await readFile(sentinel, 'utf8')).toBe('{"outside":true}')
     expect(await Bun.file(join(outside.root, 'undercurrent', 'SKILL.md')).exists()).toBeFalse()

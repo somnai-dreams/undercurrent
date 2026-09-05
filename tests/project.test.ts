@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Result } from '../src/data.ts'
-import { authorizeLocal, editAllow, findProject, initializePolicy, parsePrincipal, projectAllows, readProject } from '../src/project.ts'
+import { authorizeLocal, editAllow, findProject, initializePolicy, parsePermission, projectAllows, readProject } from '../src/project.ts'
 
 const directories: string[] = []
 const contact = { kind: 'contact', id: '11111111-1111-4111-8111-111111111111' } as const
@@ -21,6 +21,25 @@ async function fixture() {
 function unwrap<T>(result: Result<T>): T { if (!result.ok) throw new Error(result.error.message); return result.value }
 async function policy(root: string, raw: unknown) { await writeFile(join(root, '.undercurrent.json'), JSON.stringify(raw)) }
 
+test('global self is relative to each project and never grants other projects or remote contacts', async () => {
+  const { home, a, b } = await fixture()
+  await Promise.all([mkdir(join(a, '.git')), mkdir(join(b, '.git'))])
+  await writeFile(join(home, 'config.json'), JSON.stringify({ join: 'auto', allow: ['self'] }))
+  expect((await authorizeLocal(home, a, a)).ok).toBeTrue()
+  expect((await authorizeLocal(home, b, b)).ok).toBeTrue()
+  expect((await authorizeLocal(home, a, b)).ok).toBeFalse()
+  expect(projectAllows(unwrap(await findProject(home, a)), contact)).toBeFalse()
+  unwrap(await editAllow(home, a, { kind: 'self' }, false))
+  expect((await authorizeLocal(home, a, a)).ok).toBeFalse()
+  expect((await authorizeLocal(home, b, b)).ok).toBeTrue()
+  unwrap(await editAllow(home, a, { kind: 'self' }, true))
+  expect((await authorizeLocal(home, a, a)).ok).toBeTrue()
+  await policy(a, { join: 'off' })
+  expect((await authorizeLocal(home, a, a)).ok).toBeFalse()
+  await policy(a, { join: 'manual' })
+  expect((await authorizeLocal(home, a, a)).ok).toBeTrue()
+})
+
 test('global defaults apply at each git boundary and project fields override rather than merge lists', async () => {
   const { home, a, b } = await fixture()
   await writeFile(join(home, 'config.json'), JSON.stringify({ join: 'auto', allow: 'all' }))
@@ -31,7 +50,7 @@ test('global defaults apply at each git boundary and project fields override rat
   expect(unwrap(await findProject(home, join(a, 'nested')))).toEqual({ root: join(a, 'nested'), config: { join: 'auto', allow: 'all' } })
   await policy(b, { join: 'off' })
   expect(unwrap(await readProject(home, b))).toEqual({ join: 'off', allow: 'all' })
-  expect(projectAllows(unwrap(await readProject(home, b)), contact)).toBeFalse()
+  expect(projectAllows({ root: b, config: unwrap(await readProject(home, b)) }, contact)).toBeFalse()
   await policy(a, { allow: [] })
   expect(unwrap(await readProject(home, a)).allow).toEqual([])
 })
@@ -58,8 +77,8 @@ test('configuration follows canonical roots and never silently accepts stale fie
     await policy(a, value)
     expect((await readProject(home, a)).ok).toBeFalse()
   }
-  expect(parsePrincipal(`contact:${contact.id.toUpperCase()}`)).toEqual({ ok: true, value: contact })
-  expect(parsePrincipal('project:////')).toEqual({ ok: true, value: { kind: 'project', root: '/' } })
+  expect(parsePermission(`contact:${contact.id.toUpperCase()}`)).toEqual({ ok: true, value: contact })
+  expect(parsePermission('project:////')).toEqual({ ok: true, value: { kind: 'project', root: '/' } })
   await policy(a, { join: 'auto', allow: [`project:${a}///`] })
   expect((await authorizeLocal(home, a, a)).ok).toBeTrue()
   await writeFile(join(home, 'config.json'), '{broken')
@@ -98,8 +117,8 @@ test('policy edits are exclusive and cannot silently narrow all or overwrite con
   const results = await Promise.all([editAllow(home, a, contact, true), editAllow(home, a, other, true)])
   const config = unwrap(await readProject(home, a))
   expect(results.some(result => result.ok)).toBeTrue()
-  expect(projectAllows(config, contact)).toBe(results[0].ok)
-  expect(projectAllows(config, other)).toBe(results[1].ok)
+  expect(projectAllows({ root: a, config }, contact)).toBe(results[0].ok)
+  expect(projectAllows({ root: a, config }, other)).toBe(results[1].ok)
   unwrap(await editAllow(home, a, 'all', true))
   expect((await editAllow(home, a, contact, false)).ok).toBeFalse()
   expect(unwrap(await readProject(home, a)).allow).toBe('all')
@@ -110,7 +129,7 @@ test('policy edits are exclusive and cannot silently narrow all or overwrite con
 test('initialization keeps existing policy and gives a new project only its own conversations', async () => {
   const { home, a } = await fixture()
   unwrap(await initializePolicy(home, a, false))
-  expect(unwrap(await readProject(home, a))).toEqual({ join: 'auto', allow: [{ kind: 'project', root: a }] })
+  expect(unwrap(await readProject(home, a))).toEqual({ join: 'auto', allow: [{ kind: 'self' }] })
   await policy(a, { join: 'manual' })
   unwrap(await initializePolicy(home, a, false))
   expect(unwrap(await readProject(home, a)).join).toBe('manual')

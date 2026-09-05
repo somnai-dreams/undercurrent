@@ -4,24 +4,29 @@ import type { Failure, Result } from './data.ts'
 import { errorText, isObject, isUuid } from './validation.ts'
 
 export type Principal = { kind: 'project'; root: string } | { kind: 'contact'; id: string }
-export type ProjectConfig = { join: 'auto' | 'manual' | 'off'; allow: 'all' | Principal[] }
+export type Permission = Principal | { kind: 'self' }
+export type ProjectConfig = { join: 'auto' | 'manual' | 'off'; allow: 'all' | Permission[] }
 type Overrides = Partial<ProjectConfig>
 export type Project = { root: string; config: ProjectConfig }
 const defaults: ProjectConfig = { join: 'off', allow: [] }
 
-export function parsePrincipal(text: string): Result<Principal> {
+export function parsePermission(text: string): Result<Permission> {
+  if (text === 'self') return { ok: true, value: { kind: 'self' } }
   if (text.startsWith('contact:') && isUuid(text.slice(8))) return { ok: true, value: { kind: 'contact', id: text.slice(8).toLowerCase() } }
   if (text.startsWith('project:') && isAbsolute(text.slice(8)) && !/\p{Cc}/u.test(text)) return { ok: true, value: { kind: 'project', root: resolve(text.slice(8)) } }
-  return fail('Use project:<absolute project path> or contact:<pairing UUID>.', 'invalid-input')
+  return fail('Use self, project:<absolute project path>, or contact:<pairing UUID>.', 'invalid-input')
 }
-export function formatPrincipal(principal: Principal): string {
+export function formatPermission(principal: Permission): string {
   switch (principal.kind) {
+    case 'self': return 'self'
     case 'project': return `project:${principal.root}`
     case 'contact': return `contact:${principal.id}`
   }
 }
-export function projectAllows(config: ProjectConfig, principal: Principal): boolean {
-  return config.join !== 'off' && (config.allow === 'all' || config.allow.some(item => formatPrincipal(item) === formatPrincipal(principal)))
+export function projectAllows(project: Project, principal: Principal): boolean {
+  const config = project.config
+  return config.join !== 'off' && (config.allow === 'all' || config.allow.some(item =>
+    item.kind === 'self' ? principal.kind === 'project' && principal.root === project.root : formatPermission(item) === formatPermission(principal)))
 }
 
 export async function findProject(home: string, cwd: string): Promise<Result<Project>> {
@@ -67,29 +72,33 @@ export async function authorizeLocal(home: string, from: string, to: string): Pr
   if (!sender.ok) return sender
   if (!recipient.ok) return recipient
   for (const [root, config, other] of [[from, sender.value, to], [to, recipient.value, from]] as const) {
-    if (!projectAllows(config, { kind: 'project', root: other })) return fail(`Project ${root} does not allow messages with ${other}. Its owner can run uc allow ${quote(`project:${other}`)} from ${root}. No message was submitted.`, 'not-allowed')
+    if (!projectAllows({ root, config }, { kind: 'project', root: other })) return fail(`Project ${root} does not allow messages with ${other}. Its owner can run uc allow ${quote(`project:${other}`)} from ${root}. No message was submitted.`, 'not-allowed')
   }
   return { ok: true, value: undefined }
 }
-export async function initializePolicy(home: string, cwd: string, global: boolean): Promise<Result<string>> {
-  const project = await findProject(home, cwd)
-  if (!project.ok) return project
-  const path = global ? join(home, 'config.json') : join(project.value.root, '.undercurrent.json')
+export async function initializePolicy(home: string, cwd: string, global: boolean, initial: ProjectConfig = global ? defaults : { join: 'auto', allow: [{ kind: 'self' }] }): Promise<Result<string>> {
+  let path = join(home, 'config.json')
+  if (!global) {
+    const project = await findProject(home, cwd)
+    if (!project.ok) return project
+    path = join(project.value.root, '.undercurrent.json')
+  }
   const existing = await readOverrides(path)
   if (!existing.ok) return existing
   if (existing.value !== null) return { ok: true, value: path }
-  const config: ProjectConfig = global ? defaults : { join: 'auto', allow: [{ kind: 'project', root: project.value.root }] }
+  const checked = parseOverrides(serializePolicy(initial))
+  if (!checked.ok) return checked
   try {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-    await writeFile(path, `${JSON.stringify(serializePolicy(config), null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+    await writeFile(path, `${JSON.stringify(serializePolicy(checked.value), null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     return { ok: true, value: path }
   } catch (error) { return fail(`Cannot initialize ${path}: ${errorText(error)}`) }
 }
 
 // root=null edits global defaults. A project edit changes only that exact project's list.
-export async function editAllow(home: string, root: string | null, principal: Principal | 'all', allowed: boolean): Promise<Result<void>> {
+export async function editAllow(home: string, root: string | null, principal: Permission | 'all', allowed: boolean): Promise<Result<void>> {
   if (principal !== 'all') {
-    const parsed = parsePrincipal(formatPrincipal(principal))
+    const parsed = parsePermission(formatPermission(principal))
     if (!parsed.ok) return parsed
     principal = parsed.value
     if (principal.kind === 'project') {
@@ -125,8 +134,8 @@ export async function editAllow(home: string, root: string | null, principal: Pr
         if (!allowed) return fail('Replace allow: "all" with a selected list before removing one principal.', 'invalid-input')
         return { ok: true, value: undefined }
       } else {
-        const text = formatPrincipal(principal)
-        next = current.filter(item => formatPrincipal(item) !== text)
+        const text = formatPermission(principal)
+        next = current.filter(item => formatPermission(item) !== text)
         if (allowed) next.push(principal)
       }
       const updated = serializePolicy({ ...raw.value, allow: next })
@@ -145,7 +154,7 @@ export async function editAllow(home: string, root: string | null, principal: Pr
 export function serializePolicy(config: Overrides): unknown {
   return {
     ...(config.join === undefined ? {} : { join: config.join }),
-    ...(config.allow === undefined ? {} : { allow: config.allow === 'all' ? 'all' : config.allow.map(formatPrincipal) }),
+    ...(config.allow === undefined ? {} : { allow: config.allow === 'all' ? 'all' : config.allow.map(formatPermission) }),
   }
 }
 async function readOverrides(path: string): Promise<Result<Overrides | null>> {
@@ -165,12 +174,12 @@ function parseOverrides(raw: unknown): Result<Overrides> {
   if (values === undefined) return { ok: true, value: mode === undefined ? {} : { join: mode } }
   if (values === 'all') return { ok: true, value: { ...(mode === undefined ? {} : { join: mode }), allow: 'all' } }
   if (!Array.isArray(values)) return fail('allow must be "all" or a list of project/contact principals.', 'invalid-input')
-  const allow: Principal[] = []
+  const allow: Permission[] = []
   for (const value of values) {
     if (typeof value !== 'string') return fail('Allowed principals must be strings.', 'invalid-input')
-    const parsed = parsePrincipal(value)
+    const parsed = parsePermission(value)
     if (!parsed.ok) return parsed
-    if (allow.some(item => formatPrincipal(item) === formatPrincipal(parsed.value))) return fail('An allow-list cannot repeat a principal.', 'invalid-input')
+    if (allow.some(item => formatPermission(item) === formatPermission(parsed.value))) return fail('An allow-list cannot repeat a permission.', 'invalid-input')
     allow.push(parsed.value)
   }
   return { ok: true, value: { ...(mode === undefined ? {} : { join: mode }), allow } }

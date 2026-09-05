@@ -12,9 +12,12 @@ import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
 import { formatRemoteAddress, parseRemoteAddress } from './remote-protocol.ts'
 import { remoteContacts, sendRemote } from './remote.ts'
 import { errorText } from './validation.ts'
-import { authorizeLocal, editAllow, findProject, formatPrincipal, initializePolicy, parsePrincipal, serializePolicy } from './project.ts'
+import { authorizeLocal, editAllow, findProject, formatPermission, initializePolicy, parsePermission, serializePolicy } from './project.ts'
 import { installIntegration } from './install.ts'
 import { runHook } from './hooks.ts'
+import { setup } from './setup.ts'
+import type { SetupOptions } from './setup.ts'
+import packageInfo from '../package.json'
 
 type TextSource =
   | { kind: 'text'; text: string }
@@ -23,6 +26,8 @@ type TextSource =
 
 type Command =
   | { kind: 'help' }
+  | { kind: 'version' }
+  | { kind: 'setup'; options: SetupOptions }
   | { kind: 'init'; global: boolean }
   | { kind: 'config' }
   | { kind: 'allow' | 'disallow'; principal: string; global: boolean }
@@ -36,10 +41,12 @@ type Command =
 const help = `Undercurrent — messages between existing agent conversations.
 
 Usage:
+  uc setup [--global] [--host codex|claude|both]
+  uc --version
   uc init [--global]
   uc config
-  uc allow <project:/absolute/path|contact:UUID|all> [--global]
-  uc disallow <project:/absolute/path|contact:UUID|all> [--global]
+  uc allow <self|project:/absolute/path|contact:UUID|all> [--global]
+  uc disallow <self|project:/absolute/path|contact:UUID|all> [--global]
   uc install <codex|claude>
   uc join --name <label> [--about <short description>]
   uc peers
@@ -71,8 +78,9 @@ its inbox socket changes. Peer listings show registrations, not live status.
 Global defaults live in UNDERCURRENT_HOME/config.json; .undercurrent.json
 overrides them per project. join controls participation; allow controls messages.
 Joined strangers are discoverable but messages fail without waking them.
-Install lifecycle hooks once per host/project to auto-join on start/resume and
-leave on session end. Idle does not detach a peer. Codex hooks need native review.
+Setup installs lifecycle hooks globally or for this project. New setup policy
+is auto + self; existing settings are preserved. self allows only conversations
+in the same project. Idle does not detach a peer. Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.
 Submitted means queued in Codex or written to Claude's socket, not read.
@@ -94,12 +102,19 @@ async function main(args: string[]): Promise<number> {
     console.log(help)
     return 0
   }
+  if (command.value.kind === 'version') { console.log(packageInfo.version); return 0 }
   const configuredHome = process.env['UNDERCURRENT_HOME']
   if (configuredHome !== undefined && configuredHome.trim() === '') {
     return fail(invalidInput('UNDERCURRENT_HOME must be a nonempty directory path.'))
   }
   const home = configuredHome === undefined ? join(homedir(), '.undercurrent') : resolve(configuredHome)
 
+  if (command.value.kind === 'setup') {
+    const result = await setup(home, process.cwd(), command.value.options)
+    if (!result.ok) return fail(result)
+    console.log(JSON.stringify({ status: 'configured', scope: command.value.options.global ? 'global' : 'project', ...result.value, next: 'Review native hooks and start or resume a conversation. Existing policies were preserved; uc config shows the current project policy.' }))
+    return 0
+  }
   if (command.value.kind === 'remote') return runRemoteCommand(home, command.value.args)
   if (command.value.kind === 'relay') return runRelayCommand(home, command.value.args)
   if (command.value.kind === 'init') {
@@ -115,7 +130,7 @@ async function main(args: string[]): Promise<number> {
     return 0
   }
   if (command.value.kind === 'allow' || command.value.kind === 'disallow') {
-    const parsed = command.value.principal === 'all' ? { ok: true as const, value: 'all' as const } : parsePrincipal(command.value.principal)
+    const parsed = command.value.principal === 'all' ? { ok: true as const, value: 'all' as const } : parsePermission(command.value.principal)
     if (!parsed.ok) return fail(parsed)
     const principal = parsed.value
     if (command.value.kind === 'allow' && principal !== 'all' && principal.kind === 'contact') {
@@ -128,11 +143,13 @@ async function main(args: string[]): Promise<number> {
     const root = command.value.global ? null : project.value.root
     const result = await editAllow(home, root, principal, command.value.kind === 'allow')
     if (!result.ok) return fail(result)
-    console.log(JSON.stringify({ status: command.value.kind === 'allow' ? 'allowed' : 'disallowed', scope: root ?? 'global', principal: principal === 'all' ? 'all' : formatPrincipal(principal) }))
+    console.log(JSON.stringify({ status: command.value.kind === 'allow' ? 'allowed' : 'disallowed', scope: root ?? 'global', principal: principal === 'all' ? 'all' : formatPermission(principal) }))
     return 0
   }
   if (command.value.kind === 'install') {
-    const installed = await installIntegration(home, process.cwd(), command.value.provider)
+    const project = await findProject(home, process.cwd())
+    if (!project.ok) return fail(project)
+    const installed = await installIntegration(home, { kind: 'project', root: project.value.root }, command.value.provider)
     if (!installed.ok) return fail(installed)
     console.log(JSON.stringify({ status: 'installed', ...installed.value, next: command.value.provider === 'codex' ? 'Review and trust the project hooks in Codex /hooks, then start or resume a session.' : 'Start or resume a Claude session to load the project hooks.' }))
     return 0
@@ -244,6 +261,24 @@ function parseCommand(args: string[]): Result<Command> {
     case '--help':
     case '-h':
       return { ok: true, value: { kind: 'help' } }
+    case '--version':
+      if (args.length !== 1) return invalidInput('Usage: uc --version.')
+      return { ok: true, value: { kind: 'version' } }
+    case 'setup': {
+      let global = false
+      let hosts: SetupOptions['hosts'] = 'auto'
+      for (let index = 1; index < args.length; index += 1) {
+        const option = args[index]
+        if (option === '--global' && !global) global = true
+        else if (option === '--host' && hosts === 'auto') {
+          const host = args[index + 1]
+          if (host !== 'codex' && host !== 'claude' && host !== 'both') return invalidInput('--host must be codex, claude, or both.')
+          hosts = host
+          index += 1
+        } else return invalidInput('Usage: uc setup [--global] [--host codex|claude|both]. Supply each option once.')
+      }
+      return { ok: true, value: { kind: 'setup', options: { global, hosts } } }
+    }
     case 'join': {
       if (args.length === 2 && args[1] === '--help') return { ok: true, value: { kind: 'help' } }
       const name = args[2]
@@ -262,7 +297,7 @@ function parseCommand(args: string[]): Result<Command> {
     case 'allow':
     case 'disallow': {
       const principal = args[1]
-      if (principal === undefined || (args.length !== 2 && !(args.length === 3 && args[2] === '--global'))) return invalidInput(`Usage: uc ${command} <project:/absolute/path|contact:UUID|all> [--global].`)
+      if (principal === undefined || (args.length !== 2 && !(args.length === 3 && args[2] === '--global'))) return invalidInput(`Usage: uc ${command} <self|project:/absolute/path|contact:UUID|all> [--global].`)
       return { ok: true, value: { kind: command, principal, global: args[2] === '--global' } }
     }
     case 'config':

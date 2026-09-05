@@ -273,7 +273,7 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
 async function projectShares(home: string, registration: Registration, contactId: string): Promise<Result<boolean>> {
   const config = await readProject(home, registration.projectRoot)
   if (!config.ok) return config
-  return { ok: true, value: projectAllows(config.value, { kind: 'contact', id: contactId }) }
+  return { ok: true, value: projectAllows({ root: registration.projectRoot, config: config.value }, { kind: 'contact', id: contactId }) }
 }
 
 async function withSetup<T>(home: string, run: () => Promise<Result<T>>): Promise<Result<T>> {

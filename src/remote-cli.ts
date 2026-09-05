@@ -58,7 +58,7 @@ export async function runRemoteCommand(home: string, args: string[]): Promise<nu
       if (!project.ok) return fail(project)
       const result = await remotePeers(home, command.contactId)
       if (!result.ok) return fail(result)
-      const allowed = projectAllows(project.value.config, { kind: 'contact', id: command.contactId.toLowerCase() })
+      const allowed = projectAllows(project.value, { kind: 'contact', id: command.contactId.toLowerCase() })
       console.log(JSON.stringify({ peers: result.value.map(peer => ({ name: peer.name, address: formatRemoteAddress({ provider: 'remote', contactId: command.contactId.toLowerCase(), peer: peer.address }), relation: peer.allowed && allowed ? 'peer' : 'stranger' })) }))
       return 0
     }

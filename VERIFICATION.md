@@ -17,7 +17,7 @@ Committed regression coverage checks normal and pre-timeout diagnostics, bounded
 Environment: macOS, Bun 1.3.14, Codex CLI 0.153.4 through the user's existing profile wrapper, Codex desktop's bundled CLI 0.153.1, and a newly started normal interactive Claude Code 2.1.261 session. Undercurrent does not start or manage these sessions.
 
 - Codex sent distinct probe text through Claude's native inbox. Claude visibly consumed it as peer input and ran the requested reply helper.
-- Claude's reply helper invoked the native Codex queue with the exact consenting desktop task ID and exited successfully. Consumption by the Codex model remains unconfirmed while that task's current turn is active.
+- Claude's reply helper invoked the native Codex queue with the exact consenting desktop task ID and exited successfully. After Codex ended its active turn, the exact `UNDERCURRENT_NATIVE_REPLY alpha-91 received by Claude` text arrived as the next task input and was consumed by the Codex model. This completes the initial native round trip. The later courier review replies are separate checks below.
 - The tested Claude session exposed both native identity and socket environment variables, removing the proposed need for a join skill.
 - The Codex sandbox blocked socket access even though the socket existed. A normally approved scoped command succeeded. The default registry also requires write access outside this checkout.
 - Claude's native permission check declined its first compound `uc join`/`uc peers` command. Submitting `uc join` alone passed the normal permission check, followed by `uc peers`. Both native conversations are now registered. No permission settings were changed.

@@ -104,6 +104,7 @@ test('CLI discovery and native handoff agree across worktrees; inherited Git ove
     { name: 'reviewer', projectRoot: main, relation: 'peer' },
   ] })
   expect((await run(worktree, builder, ['send', 'reviewer', 'Review from a linked worktree.'])).output).toMatchObject({ status: 'submitted', to: `codex:${reviewer}`, evidence: 'codex-queue' })
+  expect((await run(worktree, builder, ['prepare', 'reviewer', 'Native review from a linked worktree.'])).output).toMatchObject({ status: 'prepared', to: `codex:${reviewer}`, destination: { provider: 'codex', threadId: reviewer } })
   const received = await readFile(capture, 'utf8')
   expect(received).toContain('Review from a linked worktree.')
   expect(received.trim().split('\n')).toHaveLength(1)
@@ -117,6 +118,7 @@ test('CLI discovery and native handoff agree across worktrees; inherited Git ove
     { name: 'builder', relation: 'stranger' }, { name: 'outsider', relation: 'stranger' }, { name: 'reviewer', relation: 'stranger' },
   ] })
   expect((await run(worktree, builder, ['send', 'reviewer', 'Must also not arrive.'])).exit).toBe(1)
+  expect((await run(worktree, builder, ['prepare', 'reviewer', 'Must not be prepared either.'])).exit).toBe(1)
   expect((await run(main, reviewer, ['send', 'builder', 'Reverse send must not arrive.'])).exit).toBe(1)
   expect(await readFile(capture, 'utf8')).toBe(received)
   await rm(join(worktree, '.undercurrent.json'))

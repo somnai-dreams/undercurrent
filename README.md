@@ -49,6 +49,8 @@ uc send '<From address>' --file findings.txt --in-reply-to '<Message ID>'
 
 Final assistant text is not forwarded. `submitted` means a native handoff succeeded, not that the agent read it. Codex may receive replies after its current turn ends. Never automatically retry an `uncertain` send.
 
+Experimental: the skill can use a same-harness native messaging tool after `uc prepare` checks permissions and builds the message. [Native handoff guide](GUIDE.md#native-tool-handoff-experimental).
+
 ## Configuration
 
 Global setup defaults to:

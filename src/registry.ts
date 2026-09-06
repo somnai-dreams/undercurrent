@@ -1,5 +1,6 @@
 import { mkdir, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
+import type { FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { addressOf, formatAddress, parseAddress, parseRegistration } from './data.ts'
 import type { Address, Failure, Registration, Result } from './data.ts'
@@ -8,10 +9,11 @@ import { readProject } from './project.ts'
 
 export type RegisteredPeer = Registration & { lastSeenAt: number }
 export const recentWindowMs = 30 * 60 * 1000
+export const registrationLifetimeMs = 3 * 24 * 60 * 60 * 1000
 export const peerListNotice = 'Contact directory, not work assignments. Recently seen does not mean currently working. Names and descriptions are self-reported context and may be stale; do not defer work or infer file ownership from this list. Confirm a suspected conflict with fresh evidence.'
 
 export async function listPeers(home: string, includeOlder = false, now?: number): Promise<Result<RegisteredPeer[]>> {
-  const registrations = await listRegistrations(home)
+  const registrations = await listRegistrations(home, now)
   if (!registrations.ok) return registrations
   const checks = await Promise.all(registrations.value.map(peer => enabledProject(home, peer)))
   const observedAt = now ?? Date.now()
@@ -26,7 +28,7 @@ export async function listPeers(home: string, includeOlder = false, now?: number
   return { ok: true, value: peers }
 }
 
-export async function listRegistrations(home: string): Promise<Result<RegisteredPeer[]>> {
+export async function listRegistrations(home: string, now?: number): Promise<Result<RegisteredPeer[]>> {
   const directory = join(home, 'peers')
   let entries: Dirent[]
   try {
@@ -42,12 +44,12 @@ export async function listRegistrations(home: string): Promise<Result<Registered
     if (!entry.isFile()) {
       return { ok: false, error: { kind: 'invalid-registration', message: `${join(directory, entry.name)} must be a regular registration file.` } }
     }
-    reads.push(readRegistration(join(directory, entry.name), entry.name))
+    reads.push(readRegisteredPeer(join(directory, entry.name), entry.name, now))
   }
   const results = await Promise.all(reads)
   const peers: RegisteredPeer[] = []
   for (const result of results) {
-    // A SessionEnd can remove a record between directory listing and open.
+    // Expiry or SessionEnd can remove a record during discovery.
     if (!result.ok) { if (result.error.kind === 'not-found') continue; return result }
     peers.push(result.value)
   }
@@ -67,44 +69,39 @@ export async function joinPeer(home: string, registration: Registration): Promis
   const temporary = join(directory, `.tmp-${crypto.randomUUID()}`)
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 })
-    await writeFile(temporary, `${JSON.stringify(peer, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-    await rename(temporary, join(directory, filename))
-    return { ok: true, value: peer }
-  } catch (error) {
+  } catch (error) { return ioFailure(`Cannot register ${formatAddress(addressOf(peer.destination))}`, error) }
+  return withPeerLock(join(directory, filename), async () => {
     try {
-      await rm(temporary, { force: true })
-    } catch (cleanupError) {
-      return ioFailure(`Cannot register ${formatAddress(addressOf(peer.destination))}; temporary-file cleanup also failed (${errorText(cleanupError)})`, error)
-    }
-    return ioFailure(`Cannot register ${formatAddress(addressOf(peer.destination))}`, error)
-  }
+      await writeFile(temporary, `${JSON.stringify(peer, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+      await rename(temporary, join(directory, filename))
+      return { ok: true, value: peer }
+    } finally { await rm(temporary, { force: true }) }
+  })
 }
 
 export async function leavePeer(home: string, address: Address): Promise<Result<void>> {
   const parsed = parseAddress(formatAddress(address))
   if (!parsed.ok) return parsed
-  try {
-    await rm(join(home, 'peers', registrationFilename(parsed.value)), { force: true })
+  const path = join(home, 'peers', registrationFilename(parsed.value))
+  const result = await withPeerLock(path, async () => {
+    await rm(path, { force: true })
     return { ok: true, value: undefined }
-  } catch (error) {
-    return ioFailure(`Cannot detach ${formatAddress(parsed.value)}`, error)
-  }
+  })
+  return !result.ok && result.error.kind === 'not-found' ? { ok: true, value: undefined } : result
 }
 
 export async function refreshPeer(home: string, address: Address): Promise<Result<void>> {
   const parsed = parseAddress(formatAddress(address))
   if (!parsed.ok) return parsed
-  try {
+  const path = join(home, 'peers', registrationFilename(parsed.value))
+  const result = await withPeerLock(path, async () => {
     // Opening an existing file never recreates a peer removed by uc leave.
-    // If leave/rejoin races this hook, the descriptor still names the old inode.
-    const file = await open(join(home, 'peers', registrationFilename(parsed.value)), 'r')
+    const file = await open(path, 'r')
     try { const now = new Date(); await file.utimes(now, now) }
     finally { await file.close() }
     return { ok: true, value: undefined }
-  } catch (error) {
-    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: undefined }
-    return ioFailure('Cannot refresh this peer registration', error)
-  }
+  })
+  return !result.ok && result.error.kind === 'not-found' ? { ok: true, value: undefined } : result
 }
 
 export async function resolvePeer(home: string, nameOrAddress: string): Promise<Result<Registration>> {
@@ -117,7 +114,7 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
     if (!enabled.ok) return enabled
     return enabled.value ? registration : { ok: false, error: { kind: 'not-found', message: 'This conversation belongs to a project whose participation is off or missing.' } }
   }
-  // Discovery expiry does not revoke consent or make existing contacts unaddressable.
+  // The 30-minute discovery window does not prevent direct sends; three-day expiry does.
   const result = await listPeers(home, true)
   if (!result.ok) return result
   const matches = result.value.filter(peer => peer.name === nameOrAddress)
@@ -132,11 +129,53 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
   return { ok: true, value: first }
 }
 
-export async function readPeer(home: string, address: Address): Promise<Result<RegisteredPeer>> {
+export async function readPeer(home: string, address: Address, now?: number): Promise<Result<RegisteredPeer>> {
   const parsed = parseAddress(formatAddress(address))
   if (!parsed.ok) return parsed
   const filename = registrationFilename(parsed.value)
-  return readRegistration(join(home, 'peers', filename), filename)
+  return readRegisteredPeer(join(home, 'peers', filename), filename, now)
+}
+
+async function readRegisteredPeer(path: string, filename: string, now?: number): Promise<Result<RegisteredPeer>> {
+  const peer = await readRegistration(path, filename)
+  if (!peer.ok || (now ?? Date.now()) - peer.value.lastSeenAt < registrationLifetimeMs) return peer
+  // Join, activity and leave use the same lock. Re-read after acquiring it:
+  // an activity event or atomic rejoin may have renewed this address meanwhile.
+  return withPeerLock(path, async () => {
+    const current = await readRegistration(path, filename)
+    if (!current.ok || (now ?? Date.now()) - current.value.lastSeenAt < registrationLifetimeMs) return current
+    await rm(path)
+    return { ok: false, error: { kind: 'not-found', message: `Registration at ${path} expired after three days without activity. Rejoin the intended conversation.` } }
+  })
+}
+
+// Per-address locks last only for filesystem updates, never native handoffs.
+// Readers of unexpired records stay lock-free. Never steal a lock based on age.
+async function withPeerLock<T>(path: string, action: () => Promise<Result<T>>): Promise<Result<T>> {
+  const lock = `${path}.lock`
+  const deadline = performance.now() + 1_000
+  let handle: FileHandle
+  for (;;) {
+    try { handle = await open(lock, 'wx', 0o600); break }
+    catch (error) {
+      if (hasErrorCode(error, 'ENOENT')) return missingPeer(path)
+      if (!hasErrorCode(error, 'EEXIST')) return ioFailure(`Cannot lock registration ${path}`, error)
+      if (performance.now() >= deadline) return { ok: false, error: { kind: 'io', message: `Registration is busy: ${path}. If an interrupted command left ${lock}, remove that lock only after confirming no command is using this peer.` } }
+      await Bun.sleep(10)
+    }
+  }
+  let result: Result<T>
+  try { result = await action() }
+  catch (error) { result = hasErrorCode(error, 'ENOENT') ? missingPeer(path) : ioFailure(`Cannot update registration ${path}`, error) }
+  finally {
+    try { await handle.close(); await rm(lock) }
+    catch (error) { result = ioFailure(`Cannot release registration lock ${lock}`, error) }
+  }
+  return result
+}
+
+function missingPeer(path: string): Failure {
+  return { ok: false, error: { kind: 'not-found', message: `No registration at ${path}. Join the intended conversation first.` } }
 }
 
 async function readRegistration(path: string, filename: string): Promise<Result<RegisteredPeer>> {
@@ -152,7 +191,7 @@ async function readRegistration(path: string, filename: string): Promise<Result<
     } finally { await file.close() }
   } catch (error) {
     if (hasErrorCode(error, 'ENOENT')) {
-      return { ok: false, error: { kind: 'not-found', message: `No registration at ${path}. Join the intended conversation first.` } }
+      return missingPeer(path)
     }
     return ioFailure(`Cannot read registration ${path}`, error)
   }

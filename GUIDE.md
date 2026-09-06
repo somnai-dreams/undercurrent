@@ -8,7 +8,7 @@ See [README](README.md) to install and try it, or [REMOTE](REMOTE.md) to connect
 | --- | --- |
 | `uc config` | Show the current directory's effective project policy. |
 | `uc peers` | List conversations seen within 30 minutes, addresses, and permission relationships. |
-| `uc peers --all` | Include older registered contacts. |
+| `uc peers --all` | Include contacts seen within the last three days. |
 | `uc join --name builder --about "Can explain search architecture"` | Attach this conversation or update its description and native destination. |
 | `uc send reviewer --file findings.txt` | Send a message to a unique label or exact address. |
 | `uc send reviewer --stdin` | Read message text from stdin. |
@@ -79,11 +79,11 @@ Commands return JSON. A send reports the message ID, addresses, and available na
 
 An actual reply confirms the agent received the message. Claude's socket provides no admission receipt, and native controls can hold or refuse incoming text. Codex failures include native diagnostics when available.
 
-`uc peers` shows conversations seen within 30 minutes; `--all` includes older contacts. Remote discovery uses the same cutoff on the receiving machine and also accepts `--all`. `lastSeenAt` is the registration file's modification time: joining writes it, and `UserPromptSubmit`, `PostToolUse` and `Stop` hooks update it without rewriting the registration. No polling process or new on-disk format is needed.
+`uc peers` shows conversations seen within 30 minutes; `--all` includes contacts seen within three days. Registry reads delete registrations after three days without activity, including when resolving an exact address. Cleanup happens on use, with no scheduled job. Remote discovery and delivery apply the same expiry on the receiving machine. `lastSeenAt` is the registration file's modification time: joining writes it, and `UserPromptSubmit`, `PostToolUse` and `Stop` hooks update it without rewriting the registration.
 
 Recently seen does not mean currently working. Names and descriptions are self-reported context, never ownership of files or tasks. Do not defer work on their authority; use fresh evidence to resolve an actual editing conflict. Descriptions can outlive the work they mention.
 
-Idle conversations remain directly addressable, including by name, after leaving default discovery. Activity hooks refresh existing registrations without undoing `uc leave`. Session-end hooks remove registrations; automatic startup/resume rejoins and refreshes Claude's socket. Missing hooks, crashes, or long periods without hook events make conversations age out. Run setup again to install the activity hooks, review them in Codex, and rejoin from existing sessions if needed. There is no heartbeat daemon, offline mailbox, or guaranteed message ordering.
+Idle conversations remain directly addressable, including by name, until the three-day expiry. Only the registration is removed; native conversations, project policies and remote pairings are unaffected. Activity hooks refresh existing registrations without recreating expired or explicitly removed entries. Session-end hooks remove registrations; automatic startup/resume rejoins and refreshes Claude's socket. Manual sessions use `uc join` to return. Missing hooks, crashes, or long periods without hook events make conversations age out. Run setup again to install the activity hooks, review them in Codex, and rejoin from existing sessions if needed. There is no heartbeat daemon, offline mailbox, or guaranteed message ordering.
 
 ## If something does not work
 
@@ -96,6 +96,7 @@ Idle conversations remain directly addressable, including by name, after leaving
 | A conversation is a stranger | Check both projects' policies and exact checkout paths. Have the owner decide whether to grant access. |
 | A send is submitted but no reply appears | Check the recipient and let the active Codex turn finish. Submitted does not mean read; ordinary final text is not forwarded. |
 | A send is uncertain | Inspect the recipient before deciding on a follow-up; do not blindly resend. |
+| “Registration is busy” | Updates briefly lock one registration. If an interrupted command left the named lock file, remove it only after confirming no command is using that peer. |
 
 Listings use the joined conversation's registered project even after changing directories; `uc config` describes the current directory. An explicit rejoin changes the registered project. A custom `UNDERCURRENT_HOME` must be the same for setup, hooks, and ordinary commands. `UNDERCURRENT_CODEX_BIN` can select a different Codex executable.
 

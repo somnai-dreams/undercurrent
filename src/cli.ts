@@ -77,16 +77,17 @@ For agent-composed text, prefer --file or stdin with a quoted heredoc delimiter.
 Double quotes and unquoted heredocs still allow shell command substitution.
 Join in each participating conversation before sending. Rejoin Claude after
 its inbox socket changes. Peer listings show conversations seen in the last
-30 minutes; --all includes older contacts. lastSeenAt is not working status.
+30 minutes; --all includes contacts seen within three days. lastSeenAt is not working status.
 Directory descriptions never establish ownership of files or tasks.
 Global defaults live in UNDERCURRENT_HOME/config.json; .undercurrent.json
 overrides them per project. join controls participation; allow controls messages.
 Joined strangers are discoverable but messages fail without waking them.
 Setup installs lifecycle hooks globally or for this project. New setup policy
 is auto + self; existing settings are preserved. self includes linked worktrees
-of the same Git repository; each checkout's policy still applies. Idle does not
-detach a peer. Prompt, tool-completion and stop hooks refresh its timestamp;
-older peers leave default discovery but remain directly addressable.
+of the same Git repository; each checkout's policy still applies. Prompt,
+tool-completion and stop hooks refresh existing registrations. Registry reads
+delete registrations after three days without activity; rejoin to return.
+Until then, older peers remain directly addressable.
 Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.

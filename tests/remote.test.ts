@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { addressOf } from '../src/data.ts'
 import type { Registration, Result } from '../src/data.ts'
-import { joinPeer as registerPeer, recentWindowMs, refreshPeer } from '../src/registry.ts'
+import { joinPeer as registerPeer, recentWindowMs, refreshPeer, registrationLifetimeMs } from '../src/registry.ts'
 import { editAllow, serializePolicy } from '../src/project.ts'
 import type { ProjectConfig } from '../src/project.ts'
 import { startRelay } from '../src/relay.ts'
@@ -80,6 +80,20 @@ describe('remote enrollment and project sharing', () => {
     unwrap(await refreshPeer(pair.bHome, addressOf(target.destination)))
     expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toHaveLength(1)
     expect(await readFile(path, 'utf8')).toBe(before)
+
+    const expired = new Date(Date.now() - registrationLifetimeMs - 60_000)
+    await utimes(path, expired, expired)
+    const to: RemoteAddress = { provider: 'remote', contactId: pair.contactId, peer: addressOf(target.destination) }
+    const message = unwrap(createMessage(addressOf(sender.destination), 'Expired contact must rejoin.', null))
+    expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
+    expect(await Bun.file(path).exists()).toBe(false)
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId, true))).toEqual([])
+    unwrap(await joinPeer(pair.bHome, target))
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toHaveLength(1)
+    await utimes(path, expired, expired)
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId, true))).toEqual([])
+    expect(await Bun.file(path).exists()).toBe(false)
+    expect(unwrap(await remoteContacts(pair.aHome)).map(contact => contact.id)).toEqual([pair.contactId])
   })
 
   test('sharing is required in both directions, and a running bridge uses refreshed native sockets', async () => {

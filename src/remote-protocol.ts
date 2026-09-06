@@ -9,8 +9,9 @@ export type RemoteAddress = { provider: 'remote'; contactId: string; peer: Addre
 export type RemoteMessage = { id: string; from: Address; text: string; inReplyTo: string | null }
 export type Delivery =
   | { type: 'send'; requestId: string; contactId: string; to: Address; message: RemoteMessage }
-  | { type: 'peers'; requestId: string; contactId: string }
-export type RemoteResult = SendOutcome | { status: 'peers'; peers: Array<{ name: string; address: Address; allowed: boolean }> }
+  | { type: 'peers'; requestId: string; contactId: string; all: boolean }
+export type RemotePeer = { name: string; address: Address; allowed: boolean; lastSeenAt: number }
+export type RemoteResult = SendOutcome | { status: 'peers'; peers: RemotePeer[] }
 export type Receipt = { type: 'receipt'; requestId: string; result: RemoteResult }
 export type Invitation = { origin: string; code: string }
 
@@ -104,8 +105,8 @@ export function parseDelivery(raw: unknown): Result<Delivery> {
   if (!isUuid(requestId) || !isUuid(contactId)) return invalid('A relay delivery needs requestId and contactId UUIDs.')
   switch (raw['type']) {
     case 'peers': {
-      if (!hasKeys(raw, ['type', 'requestId', 'contactId'])) return invalid('A peer request must contain exactly type, requestId, and contactId.')
-      return { ok: true, value: { type: 'peers', requestId: requestId.toLowerCase(), contactId: contactId.toLowerCase() } }
+      if (!hasKeys(raw, ['type', 'requestId', 'contactId', 'all']) || typeof raw['all'] !== 'boolean') return invalid('A peer request must contain exactly type, requestId, contactId, and all boolean.')
+      return { ok: true, value: { type: 'peers', requestId: requestId.toLowerCase(), contactId: contactId.toLowerCase(), all: raw['all'] } }
     }
     case 'send': {
       if (!hasKeys(raw, ['type', 'requestId', 'contactId', 'to', 'message'])) {
@@ -144,9 +145,10 @@ export function parseRemoteResult(raw: unknown): Result<RemoteResult> {
       if (!hasKeys(raw, ['status', 'peers']) || !Array.isArray(items) || items.length > 256) {
         return invalid('A peers result needs exactly status and a peers array with at most 256 entries.')
       }
-      const peers: Array<{ name: string; address: Address; allowed: boolean }> = []
+      const peers: RemotePeer[] = []
       for (const item of items) {
-        if (!isObject(item) || !hasKeys(item, ['name', 'address', 'allowed']) || typeof item['allowed'] !== 'boolean') return invalid('Each remote peer needs exactly name, address, and an allowed boolean.')
+        if (!isObject(item) || !hasKeys(item, ['name', 'address', 'allowed', 'lastSeenAt']) || typeof item['allowed'] !== 'boolean'
+          || typeof item['lastSeenAt'] !== 'number' || !Number.isSafeInteger(item['lastSeenAt']) || item['lastSeenAt'] < 0 || item['lastSeenAt'] > 8_640_000_000_000_000) return invalid('Each remote peer needs name, address, an allowed boolean, and a valid lastSeenAt timestamp.')
         const name = item['name']
         if (typeof name !== 'string' || name.trim() === '' || name !== name.trim() || name.includes(':')
           || controlPattern.test(name) || Buffer.byteLength(name, 'utf8') > 256) {
@@ -154,7 +156,7 @@ export function parseRemoteResult(raw: unknown): Result<RemoteResult> {
         }
         const address = parseNativeAddress(item['address'])
         if (!address.ok) return address
-        peers.push({ name, address: address.value, allowed: item['allowed'] })
+        peers.push({ name, address: address.value, allowed: item['allowed'], lastSeenAt: item['lastSeenAt'] })
       }
       return { ok: true, value: { status: 'peers', peers } }
     }

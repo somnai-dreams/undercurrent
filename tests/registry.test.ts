@@ -25,8 +25,8 @@ describe('peer registry', () => {
     expect(ambiguous.error.kind).toBe('ambiguous')
     expect(ambiguous.error.message).toContain(formatAddress(addressOf(codex.destination)))
     expect(ambiguous.error.message).toContain(formatAddress(addressOf(claude.destination)))
-    expect(unwrap(await resolvePeer(home, formatAddress(addressOf(codex.destination))))).toEqual(codex)
-    expect(unwrap(await resolvePeer(home, formatAddress(addressOf(claude.destination))))).toEqual(claude)
+    expect(unwrap(await resolvePeer(home, formatAddress(addressOf(codex.destination))))).toMatchObject(codex)
+    expect(unwrap(await resolvePeer(home, formatAddress(addressOf(claude.destination))))).toMatchObject(claude)
   })
 
   test('rejoining refreshes only the same native conversation; leaving preserves peers', async () => {
@@ -42,11 +42,11 @@ describe('peer registry', () => {
     }
     unwrap(await joinPeer(home, resumed))
     expect(unwrap(await listPeers(home))).toHaveLength(2)
-    expect(unwrap(await resolvePeer(home, 'resumed-review'))).toEqual(resumed)
-    expect(unwrap(await resolvePeer(home, 'review'))).toEqual(codex)
+    expect(unwrap(await resolvePeer(home, 'resumed-review'))).toMatchObject(resumed)
+    expect(unwrap(await resolvePeer(home, 'review'))).toMatchObject(codex)
     unwrap(await leavePeer(home, addressOf(resumed.destination)))
     unwrap(await leavePeer(home, addressOf(resumed.destination)))
-    expect(unwrap(await listPeers(home))).toEqual([codex])
+    expect(unwrap(await listPeers(home))).toMatchObject([codex])
   })
 
   test('concurrent joins keep complete, independently addressable files', async () => {
@@ -59,7 +59,7 @@ describe('peer registry', () => {
     for (const write of writes) unwrap(write)
     expect(unwrap(await listPeers(home))).toHaveLength(peers.length)
     for (const peer of peers) {
-      expect(unwrap(await resolvePeer(home, formatAddress(addressOf(peer.destination))))).toEqual(peer)
+      expect(unwrap(await resolvePeer(home, formatAddress(addressOf(peer.destination))))).toMatchObject(peer)
     }
     expect(await readdir(join(home, 'peers'))).toHaveLength(peers.length)
   })
@@ -107,12 +107,12 @@ describe('peer registry', () => {
     unwrap(await joinPeer(home, codex))
     unwrap(await joinPeer(home, other))
     await writeFile(policy, JSON.stringify({ join: 'off', allow: [] }))
-    expect(unwrap(await listPeers(home))).toEqual([codex])
+    expect(unwrap(await listPeers(home))).toMatchObject([codex])
     expect(unwrap(await listRegistrations(home))).toHaveLength(2)
-    expect(unwrap(await resolvePeer(home, 'review'))).toEqual(codex)
+    expect(unwrap(await resolvePeer(home, 'review'))).toMatchObject(codex)
     expect((await resolvePeer(home, formatAddress(addressOf(other.destination)))).ok).toBeFalse()
     await rm(policy)
-    expect(unwrap(await listPeers(home))).toEqual([codex])
+    expect(unwrap(await listPeers(home))).toMatchObject([codex])
     await writeFile(policy, '{invalid')
     expect((await listPeers(home)).ok).toBeFalse()
     expect((await resolvePeer(home, formatAddress(addressOf(other.destination)))).ok).toBeFalse()

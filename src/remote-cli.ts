@@ -9,12 +9,14 @@ import { formatRemoteAddress } from './remote-protocol.ts'
 import { errorText, isToken } from './validation.ts'
 import { hasPermission } from './project.ts'
 import { discoveryProject } from './current.ts'
+import { peerListNotice, recentWindowMs } from './registry.ts'
 
 type RemoteCommand =
   | { kind: 'init'; origin: string }
   | { kind: 'accept'; invitation: string }
   | { kind: 'invite' | 'contacts' | 'status' | 'bridge' }
-  | { kind: 'peers' | 'revoke'; contactId: string }
+  | { kind: 'peers'; contactId: string; all: boolean }
+  | { kind: 'revoke'; contactId: string }
 
 export async function runRemoteCommand(home: string, args: string[]): Promise<number> {
   const parsed = parseRemoteCommand(args)
@@ -56,10 +58,10 @@ export async function runRemoteCommand(home: string, args: string[]): Promise<nu
     case 'peers': {
       const project = await discoveryProject(home, process.cwd())
       if (!project.ok) return fail(project)
-      const result = await remotePeers(home, command.contactId)
+      const result = await remotePeers(home, command.contactId, command.all)
       if (!result.ok) return fail(result)
       const allowed = hasPermission(project.value.config, { kind: 'contact', id: command.contactId.toLowerCase() })
-      console.log(JSON.stringify({ peers: result.value.map(peer => ({ name: peer.name, address: formatRemoteAddress({ provider: 'remote', contactId: command.contactId.toLowerCase(), peer: peer.address }), relation: peer.allowed && allowed ? 'peer' : 'stranger' })) }))
+      console.log(JSON.stringify({ notice: peerListNotice, scope: command.all ? 'all' : 'recent', recentWindowMinutes: recentWindowMs / 60_000, peers: result.value.map(peer => ({ name: peer.name, address: formatRemoteAddress({ provider: 'remote', contactId: command.contactId.toLowerCase(), peer: peer.address }), lastSeenAt: new Date(peer.lastSeenAt).toISOString(), relation: peer.allowed && allowed ? 'peer' : 'stranger' })) }))
       return 0
     }
     case 'revoke': {
@@ -150,6 +152,8 @@ function parseRemoteCommand(args: string[]): Result<RemoteCommand> {
       if (args.length === 1) return { ok: true, value: { kind: command } }
       return invalidInput(`Usage: uc remote ${command}.`)
     case 'peers':
+      if (argument !== undefined && (args.length === 2 || (args.length === 3 && args[2] === '--all'))) return { ok: true, value: { kind: command, contactId: argument, all: args[2] === '--all' } }
+      return invalidInput('Usage: uc remote peers <contact UUID> [--all].')
     case 'revoke':
       if (args.length === 2 && argument !== undefined) return { ok: true, value: { kind: command, contactId: argument } }
       return invalidInput(`Usage: uc remote ${command} <contact UUID>.`)

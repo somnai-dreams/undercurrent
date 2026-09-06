@@ -4,6 +4,8 @@ Undercurrent connects existing conversations on trusted machines through a small
 
 This first experiment targets two machines, one invitation, and participating projects on each side. Local messaging continues to work without any remote setup.
 
+Discovery shows conversations seen within 30 minutes on the receiving machine. Use `uc remote peers <pairing UUID> --all` for older contacts; each result includes `lastSeenAt`. These are contact records, not current work assignments. Upgrade the relay and both bridges together for this discovery format; saved identity and pairing files are unchanged.
+
 ## Trust and sharing
 
 Both participants must trust the relay operator to read message contents and authenticate contacts. HTTPS protects the connection to that operator; it is not end-to-end encryption. The invitation authorizes its holder to become a contact, so share it privately. Invitations expire after ten minutes and can be redeemed once.

@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import { join } from 'node:path'
 import { addressOf, formatAddress, parseAddress, parseRegistration } from './data.ts'
@@ -6,22 +6,27 @@ import type { Address, Failure, Registration, Result } from './data.ts'
 import { errorText } from './validation.ts'
 import { readProject } from './project.ts'
 
-export async function listPeers(home: string): Promise<Result<Registration[]>> {
+export type RegisteredPeer = Registration & { lastSeenAt: number }
+export const recentWindowMs = 30 * 60 * 1000
+export const peerListNotice = 'Contact directory, not work assignments. Recently seen does not mean currently working. Names and descriptions are self-reported context and may be stale; do not defer work or infer file ownership from this list. Confirm a suspected conflict with fresh evidence.'
+
+export async function listPeers(home: string, includeOlder = false, now?: number): Promise<Result<RegisteredPeer[]>> {
   const registrations = await listRegistrations(home)
   if (!registrations.ok) return registrations
   const checks = await Promise.all(registrations.value.map(peer => enabledProject(home, peer)))
-  const peers: Registration[] = []
+  const observedAt = now ?? Date.now()
+  const peers: RegisteredPeer[] = []
   for (let index = 0; index < checks.length; index += 1) {
     const check = checks[index]
     const registration = registrations.value[index]
     if (check === undefined || registration === undefined) throw new Error('Project checks must match their registrations')
     if (!check.ok) return check
-    if (check.value) peers.push(registration)
+    if (check.value && (includeOlder || (registration.lastSeenAt <= observedAt && observedAt - registration.lastSeenAt <= recentWindowMs))) peers.push(registration)
   }
   return { ok: true, value: peers }
 }
 
-export async function listRegistrations(home: string): Promise<Result<Registration[]>> {
+export async function listRegistrations(home: string): Promise<Result<RegisteredPeer[]>> {
   const directory = join(home, 'peers')
   let entries: Dirent[]
   try {
@@ -31,7 +36,7 @@ export async function listRegistrations(home: string): Promise<Result<Registrati
     return ioFailure(`Cannot list peers in ${directory}`, error)
   }
 
-  const reads: Promise<Result<Registration>>[] = []
+  const reads: Promise<Result<RegisteredPeer>>[] = []
   for (const entry of entries) {
     if (!entry.name.endsWith('.json')) continue
     if (!entry.isFile()) {
@@ -40,9 +45,10 @@ export async function listRegistrations(home: string): Promise<Result<Registrati
     reads.push(readRegistration(join(directory, entry.name), entry.name))
   }
   const results = await Promise.all(reads)
-  const peers: Registration[] = []
+  const peers: RegisteredPeer[] = []
   for (const result of results) {
-    if (!result.ok) return result
+    // A SessionEnd can remove a record between directory listing and open.
+    if (!result.ok) { if (result.error.kind === 'not-found') continue; return result }
     peers.push(result.value)
   }
   peers.sort((left, right) => left.name.localeCompare(right.name) || formatAddress(addressOf(left.destination)).localeCompare(formatAddress(addressOf(right.destination))))
@@ -85,6 +91,22 @@ export async function leavePeer(home: string, address: Address): Promise<Result<
   }
 }
 
+export async function refreshPeer(home: string, address: Address): Promise<Result<void>> {
+  const parsed = parseAddress(formatAddress(address))
+  if (!parsed.ok) return parsed
+  try {
+    // Opening an existing file never recreates a peer removed by uc leave.
+    // If leave/rejoin races this hook, the descriptor still names the old inode.
+    const file = await open(join(home, 'peers', registrationFilename(parsed.value)), 'r')
+    try { const now = new Date(); await file.utimes(now, now) }
+    finally { await file.close() }
+    return { ok: true, value: undefined }
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return { ok: true, value: undefined }
+    return ioFailure('Cannot refresh this peer registration', error)
+  }
+}
+
 export async function resolvePeer(home: string, nameOrAddress: string): Promise<Result<Registration>> {
   if (nameOrAddress.includes(':')) {
     const parsed = parseAddress(nameOrAddress)
@@ -95,7 +117,8 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
     if (!enabled.ok) return enabled
     return enabled.value ? registration : { ok: false, error: { kind: 'not-found', message: 'This conversation belongs to a project whose participation is off or missing.' } }
   }
-  const result = await listPeers(home)
+  // Discovery expiry does not revoke consent or make existing contacts unaddressable.
+  const result = await listPeers(home, true)
   if (!result.ok) return result
   const matches = result.value.filter(peer => peer.name === nameOrAddress)
   const first = matches[0]
@@ -109,17 +132,24 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
   return { ok: true, value: first }
 }
 
-export async function readPeer(home: string, address: Address): Promise<Result<Registration>> {
+export async function readPeer(home: string, address: Address): Promise<Result<RegisteredPeer>> {
   const parsed = parseAddress(formatAddress(address))
   if (!parsed.ok) return parsed
   const filename = registrationFilename(parsed.value)
   return readRegistration(join(home, 'peers', filename), filename)
 }
 
-async function readRegistration(path: string, filename: string): Promise<Result<Registration>> {
+async function readRegistration(path: string, filename: string): Promise<Result<RegisteredPeer>> {
   let text: string
+  let lastSeenAt: number
   try {
-    text = await readFile(path, 'utf8')
+    const file = await open(path, 'r')
+    try {
+      // Read text and metadata from the same file, even during an atomic rejoin.
+      const [contents, info] = await Promise.all([file.readFile('utf8'), file.stat()])
+      text = contents
+      lastSeenAt = Math.floor(info.mtimeMs)
+    } finally { await file.close() }
   } catch (error) {
     if (hasErrorCode(error, 'ENOENT')) {
       return { ok: false, error: { kind: 'not-found', message: `No registration at ${path}. Join the intended conversation first.` } }
@@ -140,7 +170,7 @@ async function readRegistration(path: string, filename: string): Promise<Result<
   if (filename !== expected) {
     return { ok: false, error: { kind: 'invalid-registration', message: `${path} identifies a different conversation; its filename must be ${expected}.` } }
   }
-  return parsed
+  return { ok: true, value: { ...parsed.value, lastSeenAt } }
 }
 
 function registrationFilename(address: Address): string {

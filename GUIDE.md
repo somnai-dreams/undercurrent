@@ -7,8 +7,9 @@ See [README](README.md) to install and try it, or [REMOTE](REMOTE.md) to connect
 | Command | Purpose |
 | --- | --- |
 | `uc config` | Show the current directory's effective project policy. |
-| `uc peers` | List registered conversations, addresses, and permission relationships. |
-| `uc join --name builder --about "Working on search"` | Attach this conversation or update its description and native destination. |
+| `uc peers` | List conversations seen within 30 minutes, addresses, and permission relationships. |
+| `uc peers --all` | Include older registered contacts. |
+| `uc join --name builder --about "Can explain search architecture"` | Attach this conversation or update its description and native destination. |
 | `uc send reviewer --file findings.txt` | Send a message to a unique label or exact address. |
 | `uc send reviewer --stdin` | Read message text from stdin. |
 | `uc leave` | Remove this conversation's registration until it rejoins. |
@@ -78,7 +79,11 @@ Commands return JSON. A send reports the message ID, addresses, and available na
 
 An actual reply confirms the agent received the message. Claude's socket provides no admission receipt, and native controls can hold or refuse incoming text. Codex failures include native diagnostics when available.
 
-Idle conversations remain registered. Session-end hooks remove registrations; a later automatic startup/resume rejoins and refreshes Claude's socket. Crashes or skipped hooks can leave stale entries. There is no idle timer, heartbeat, offline mailbox, or guaranteed message ordering.
+`uc peers` shows conversations seen within 30 minutes; `--all` includes older contacts. Remote discovery uses the same cutoff on the receiving machine and also accepts `--all`. `lastSeenAt` is the registration file's modification time: joining writes it, and `UserPromptSubmit`, `PostToolUse` and `Stop` hooks update it without rewriting the registration. No polling process or new on-disk format is needed.
+
+Recently seen does not mean currently working. Names and descriptions are self-reported context, never ownership of files or tasks. Do not defer work on their authority; use fresh evidence to resolve an actual editing conflict. Descriptions can outlive the work they mention.
+
+Idle conversations remain directly addressable, including by name, after leaving default discovery. Activity hooks refresh existing registrations without undoing `uc leave`. Session-end hooks remove registrations; automatic startup/resume rejoins and refreshes Claude's socket. Missing hooks, crashes, or long periods without hook events make conversations age out. Run setup again to install the activity hooks, review them in Codex, and rejoin from existing sessions if needed. There is no heartbeat daemon, offline mailbox, or guaranteed message ordering.
 
 ## If something does not work
 

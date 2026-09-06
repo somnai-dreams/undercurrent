@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, jest, spyOn, test } from 'bun:test'
 import { createServer } from 'node:net'
 import type { Server } from 'node:net'
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { addressOf } from '../src/data.ts'
 import type { Registration, Result } from '../src/data.ts'
-import { joinPeer as registerPeer } from '../src/registry.ts'
+import { joinPeer as registerPeer, recentWindowMs, refreshPeer } from '../src/registry.ts'
 import { editAllow, serializePolicy } from '../src/project.ts'
 import type { ProjectConfig } from '../src/project.ts'
 import { startRelay } from '../src/relay.ts'
@@ -57,6 +57,31 @@ describe('remote enrollment and project sharing', () => {
     expect(unwrap(await remoteContacts(join(home, 'machine'))).map(contact => contact.id)).toEqual([accepted.contactId])
   })
 
+  test('remote discovery expires at the owner, all includes older peers, and direct sends remain usable', async () => {
+    const pair = await pairedMachines()
+    const native = await nativeSocket(join(pair.home, 'old.sock'))
+    const target = { name: 'old-peer', destination: { provider: 'claude' as const, sessionId: targetId, socketPath: native.path } }
+    unwrap(await joinPeer(pair.aHome, sender))
+    unwrap(await joinPeer(pair.bHome, target))
+    await allowContact(pair.aHome, pair.contactId)
+    await allowContact(pair.bHome, pair.contactId)
+    await connectedBridge(pair.bHome)
+    const path = join(pair.bHome, 'peers', `claude:${targetId}.json`)
+    const old = new Date(Date.now() - 2 * recentWindowMs)
+    await utimes(path, old, old)
+    const before = await readFile(path, 'utf8')
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([])
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId, true))).toEqual([{ name: target.name, address: addressOf(target.destination), allowed: true, lastSeenAt: old.getTime() }])
+    const outcome = await sendRemote(pair.aHome, { provider: 'remote', contactId: pair.contactId, peer: addressOf(target.destination) }, unwrap(createMessage(addressOf(sender.destination), 'Direct reply to an older contact.', null)))
+    expect(outcome.status).toBe('submitted')
+    expect(await native.received).toContain('Direct reply to an older contact.')
+    // A socket write is not evidence that the recipient itself became active.
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([])
+    unwrap(await refreshPeer(pair.bHome, addressOf(target.destination)))
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toHaveLength(1)
+    expect(await readFile(path, 'utf8')).toBe(before)
+  })
+
   test('sharing is required in both directions, and a running bridge uses refreshed native sockets', async () => {
     const pair = await pairedMachines()
     const first = await nativeSocket(join(pair.home, 'first.sock'))
@@ -65,7 +90,7 @@ describe('remote enrollment and project sharing', () => {
     unwrap(await joinPeer(pair.aHome, sender))
     unwrap(await joinPeer(pair.bHome, target))
     await connectedBridge(pair.bHome)
-    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([{ name: 'receiver', address: addressOf(target.destination), allowed: false }])
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toMatchObject([{ name: 'receiver', address: addressOf(target.destination), allowed: false }])
     const to: RemoteAddress = { provider: 'remote', contactId: pair.contactId, peer: addressOf(target.destination) }
     const message = unwrap(createMessage(addressOf(sender.destination), 'First line\nUnicode: 🐦\nQuoted: "hello"; $(ignored)', null))
     const unsharedSource = await sendRemote(pair.aHome, to, message)
@@ -73,7 +98,7 @@ describe('remote enrollment and project sharing', () => {
     unwrap(await allowContact(pair.aHome, pair.contactId.toUpperCase()))
     expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
     unwrap(await allowContact(pair.bHome, pair.contactId))
-    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([{ name: 'receiver', address: addressOf(target.destination), allowed: true }])
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toMatchObject([{ name: 'receiver', address: addressOf(target.destination), allowed: true }])
     expect(await sendRemote(pair.aHome, to, message)).toEqual({ status: 'submitted', evidence: 'claude-socket' })
     const firstFrame = await first.received
     expect(firstFrame).toContain(`remote:${pair.contactId}/codex:`)
@@ -84,7 +109,7 @@ describe('remote enrollment and project sharing', () => {
     expect((await sendRemote(pair.aHome, to, unwrap(createMessage(addressOf(sender.destination), 'After resume', null)))).status).toBe('submitted')
     expect(await second.received).toContain('After resume')
     unwrap(await editAllow(pair.bHome, join(pair.bHome, 'project'), { kind: 'contact', id: pair.contactId }, false))
-    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([{ name: 'receiver', address: addressOf(target.destination), allowed: false }])
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toMatchObject([{ name: 'receiver', address: addressOf(target.destination), allowed: false }])
     expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
     const spoof = { ...message, from: { provider: 'remote' as const, contactId: pair.contactId, peer: message.from.provider === 'codex' ? message.from : addressOf(sender.destination) } }
     expect((await sendRemote(pair.aHome, to, spoof)).status).toBe('failed')
@@ -109,7 +134,7 @@ describe('remote enrollment and project sharing', () => {
     const denied = await sendRemote(pair.aHome, { provider: 'remote', contactId: renewed.contactId, peer: addressOf(target.destination) }, unwrap(createMessage(addressOf(sender.destination), 'must not reach native adapter', null)))
     expect(denied.status).toBe('failed')
     expect('error' in denied && denied.error).toContain('does not allow your contact')
-    expect(unwrap(await remotePeers(pair.aHome, renewed.contactId))).toEqual([{ name: 'receiver', address: addressOf(target.destination), allowed: false }])
+    expect(unwrap(await remotePeers(pair.aHome, renewed.contactId))).toMatchObject([{ name: 'receiver', address: addressOf(target.destination), allowed: false }])
     expect((await remotePeers(pair.aHome, pair.contactId)).ok).toBeFalse()
   })
 
@@ -125,7 +150,7 @@ describe('remote enrollment and project sharing', () => {
     unwrap(await joinPeer(pair.bHome, future))
     const to: RemoteAddress = { provider: 'remote', contactId: pair.contactId, peer: addressOf(future.destination) }
     const message = unwrap(createMessage(addressOf(sender.destination), 'A peer registered after all was shared', null))
-    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([{ name: 'later', address: to.peer, allowed: true }])
+    expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toMatchObject([{ name: 'later', address: to.peer, allowed: true }])
     expect((await sendRemote(pair.aHome, to, message)).status).toBe('submitted')
     expect(await native.received).toContain(message.text)
     await configureProject(pair.bHome, { join: 'off', allow: 'all' })

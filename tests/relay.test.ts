@@ -190,8 +190,8 @@ test('routing binds receipt to its bridge and distinct dispatch ID while preserv
   const peerRequest = await b.next()
   expect(peerRequest.type).toBe('peers')
   b.receipt(delivery.requestId, { status: 'failed', error: 'Duplicate old receipt' })
-  b.receipt(peerRequest.requestId, { status: 'peers', peers: [{ name: 'review', address: delivery.to, allowed: true }] })
-  expect(await object(await discovery)).toEqual({ status: 'peers', peers: [{ name: 'review', address: delivery.to, allowed: true }] })
+    b.receipt(peerRequest.requestId, { status: 'peers', peers: [{ name: 'review', address: delivery.to, allowed: true, lastSeenAt: 1_800_000_000_000 }] })
+    expect(await object(await discovery)).toEqual({ status: 'peers', peers: [{ name: 'review', address: delivery.to, allowed: true, lastSeenAt: 1_800_000_000_000 }] })
   expect(await readFile(statePath, 'utf8')).not.toContain(text)
 })
 

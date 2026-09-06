@@ -1,5 +1,13 @@
 # Verification
 
+## Peer discovery freshness — 6 September 2026
+
+`uc peers` and remote discovery default to registrations seen within 30 minutes; `--all` includes older contacts. The registration file's modification time supplies `lastSeenAt`, without changing its JSON format. Native prompt, tool-completion and stop hooks refresh existing records without rewriting descriptions or undoing `uc leave`. A directory entry explicitly conveys neither current work nor ownership.
+
+Types, lint and 85 tests pass (791 assertions, 7.11 seconds). New cases cover the exact expiry boundary, future timestamps, unchanged registration bytes, ambiguous names spanning old and new contacts, hook identity mismatch, refresh after activity, no recreation after leave, valid quiet Stop output, and remote expiry at the receiver while direct replies remain usable.
+
+An isolated Claude Code 2.1.263 run used the actual installed hook commands and a loopback model fixture that invoked only native `ListAgents`. `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` all reported success. Artificially aged registration metadata was refreshed after the native tool and again at Stop. No model service or existing peer was contacted. The first fixture run mishandled an optional HEAD request; after fixing that fixture endpoint, the complete run exited successfully. Codex event commands are covered by the installation fixtures; native hook trust still requires the owner's review.
+
 5 September 2026. This records observed behavior, including incomplete live checks.
 
 ## Automated checks

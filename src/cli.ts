@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { currentDestination, discoveryProject } from './current.ts'
 import { addressOf, formatAddress } from './data.ts'
 import type { Failure, Provider, Registration, Result } from './data.ts'
-import { joinPeer, leavePeer, listPeers, resolvePeer } from './registry.ts'
+import { joinPeer, leavePeer, listPeers, peerListNotice, recentWindowMs, resolvePeer } from './registry.ts'
 import { createMessage, sendMessage } from './send.ts'
 import type { SendOutcome } from './send.ts'
 import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
@@ -33,7 +33,7 @@ type Command =
   | { kind: 'allow' | 'disallow'; principal: string; global: boolean }
   | { kind: 'install' | 'hook'; provider: Provider }
   | { kind: 'join'; name: string; about: string | null }
-  | { kind: 'peers' }
+  | { kind: 'peers'; all: boolean }
   | { kind: 'leave' }
   | { kind: 'remote' | 'relay'; args: string[] }
   | { kind: 'send'; target: string; source: TextSource; inReplyTo: string | null }
@@ -49,7 +49,7 @@ Usage:
   uc disallow <self|project:/absolute/path|contact:UUID|all> [--global]
   uc install <codex|claude>
   uc join --name <label> [--about <short description>]
-  uc peers
+  uc peers [--all]
   uc send <label|address> --file <path> [--in-reply-to <message UUID>]
   uc send <label|address> --stdin [--in-reply-to <message UUID>]
   uc send <label|address> 'plain text' [--in-reply-to <message UUID>]
@@ -61,7 +61,7 @@ Remote (optional):
   uc remote accept <invitation>
   uc remote status
   uc remote contacts
-  uc remote peers <contact UUID>
+  uc remote peers <contact UUID> [--all]
   uc remote revoke <contact UUID>
   uc remote bridge
   uc relay [--state <file>] [--host <host>] [--port <port>]
@@ -76,14 +76,18 @@ Use -- before message text that begins with a dash.
 For agent-composed text, prefer --file or stdin with a quoted heredoc delimiter.
 Double quotes and unquoted heredocs still allow shell command substitution.
 Join in each participating conversation before sending. Rejoin Claude after
-its inbox socket changes. Peer listings show registrations, not live status.
+its inbox socket changes. Peer listings show conversations seen in the last
+30 minutes; --all includes older contacts. lastSeenAt is not working status.
+Directory descriptions never establish ownership of files or tasks.
 Global defaults live in UNDERCURRENT_HOME/config.json; .undercurrent.json
 overrides them per project. join controls participation; allow controls messages.
 Joined strangers are discoverable but messages fail without waking them.
 Setup installs lifecycle hooks globally or for this project. New setup policy
 is auto + self; existing settings are preserved. self includes linked worktrees
 of the same Git repository; each checkout's policy still applies. Idle does not
-detach a peer. Codex hooks need native review.
+detach a peer. Prompt, tool-completion and stop hooks refresh its timestamp;
+older peers leave default discovery but remain directly addressable.
+Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.
 Submitted means queued in Codex or written to Claude's socket, not read.
@@ -169,12 +173,12 @@ async function main(args: string[]): Promise<number> {
       console.error(`Undercurrent hook: ${result.error.message}`)
       return 1
     }
-    if (result.value !== null) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: result.value } }))
+    console.log(JSON.stringify(result.value === null ? {} : { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: result.value } }))
     return 0
   }
 
   if (command.value.kind === 'peers') {
-    const peers = await listPeers(home)
+    const peers = await listPeers(home, command.value.all)
     if (!peers.ok) return fail(peers)
     const project = await discoveryProject(home, process.cwd())
     if (!project.ok) return fail(project)
@@ -182,9 +186,9 @@ async function main(args: string[]): Promise<number> {
     for (const peer of peers.value) {
       const permitted = await authorizeLocal(home, project.value.root, peer.projectRoot)
       if (!permitted.ok && permitted.error.kind !== 'not-allowed') return fail(permitted)
-      output.push({ ...peerOutput(peer), relation: permitted.ok ? 'peer' : 'stranger' })
+      output.push({ ...peerOutput(peer), lastSeenAt: new Date(peer.lastSeenAt).toISOString(), relation: permitted.ok ? 'peer' : 'stranger' })
     }
-    console.log(JSON.stringify({ peers: output }))
+    console.log(JSON.stringify({ notice: peerListNotice, scope: command.value.all ? 'all' : 'recent', recentWindowMinutes: recentWindowMs / 60_000, peers: output }))
     return 0
   }
 
@@ -303,8 +307,10 @@ function parseCommand(args: string[]): Result<Command> {
       if (principal === undefined || (args.length !== 2 && !(args.length === 3 && args[2] === '--global'))) return invalidInput(`Usage: uc ${command} <self|project:/absolute/path|contact:UUID|all> [--global].`)
       return { ok: true, value: { kind: command, principal, global: args[2] === '--global' } }
     }
-    case 'config':
     case 'peers':
+      if (args.length !== 1 && !(args.length === 2 && args[1] === '--all')) return invalidInput('Usage: uc peers [--all].')
+      return { ok: true, value: { kind: 'peers', all: args[1] === '--all' } }
+    case 'config':
     case 'leave':
       if (args.length !== 1) return invalidInput(`Usage: uc ${command}.`)
       return { ok: true, value: { kind: command } }

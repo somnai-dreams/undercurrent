@@ -65,7 +65,7 @@ Joined conversations are discoverable locally and by already paired remote conta
 
 ## Status and guides
 
-Early dogfood release. Real local Codex–Claude exchanges are verified; native startup/shutdown and two-machine remote delivery still need live testing. Idle peers remain registered; crashed sessions can leave stale entries.
+Early dogfood release. Real local Codex–Claude exchanges are verified; native startup/shutdown and two-machine remote delivery still need live testing. Discovery shows conversations seen within 30 minutes; `uc peers --all` includes older contacts. Entries never establish ownership of work.
 
 - [Command reference, permissions, troubleshooting, and packaging](GUIDE.md)
 - [Remote messaging](REMOTE.md) — invitations through a trusted, self-hosted relay; no offline storage or end-to-end encryption.

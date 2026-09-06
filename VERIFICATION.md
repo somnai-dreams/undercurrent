@@ -1,8 +1,16 @@
 # Verification
 
-5 September 2026. This records observed behavior, including incomplete live checks.
+This records observed behavior, including incomplete live checks.
 
-## Automated checks
+## Native tool handoff prototype — 6 September 2026
+
+`uc prepare` shares the CLI's sender, message, recipient, and project-policy checks with `uc send`, then returns a prepared envelope and exact native identity without invoking delivery. Fixtures cover both harnesses, unchanged registrations, literal file/stdin text, reply references, missing and ambiguous peers, stale sender sockets, current permissions after changing directories, worktrees, and rejection of cross-harness or remote preparation.
+
+The full check passes: 86 tests, 831 assertions, types, and lint. The suite requires permission to open its temporary sockets and loopback listeners; the first sandboxed full run could not open those fixtures, and the rerun with that access passed. Skill validation and packaging also pass. The installed main checkout was left in place while this prototype was built in an isolated branch.
+
+Live handoff through the agent-facing native tools remains unverified, including whether Claude's native discovery exposes enough identity information to match an Undercurrent registration exactly. The skill uses the courier when an exact native match cannot be established before sending. A prepared result is not submission evidence, and its permission check is a snapshot: subsequent native-tool delivery is governed by that host and the agent following the skill.
+
+## Automated checks — 5 September 2026
 
 `bun run check` passes strict TypeScript 7, type-aware lint, and 81 tests (734 assertions), including the remote prototype, project policies, linked worktrees, global setup, and packaged installation. Local coverage includes exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 

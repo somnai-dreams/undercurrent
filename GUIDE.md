@@ -11,6 +11,7 @@ See [README](README.md) to install and try it, or [REMOTE](REMOTE.md) to connect
 | `uc join --name builder --about "Working on search"` | Attach this conversation or update its description and native destination. |
 | `uc send reviewer --file findings.txt` | Send a message to a unique label or exact address. |
 | `uc send reviewer --stdin` | Read message text from stdin. |
+| `uc prepare reviewer --file findings.txt` | Check permissions and prepare text for a native messaging tool; send nothing. |
 | `uc leave` | Remove this conversation's registration until it rejoins. |
 | `uc --help` | Show all commands, including optional remote messaging. |
 
@@ -27,6 +28,20 @@ UC_MESSAGE
 ```
 
 Keep the delimiter quoted and choose one absent from the message's complete lines. Shell backticks, `$()`, and variables expand inside double-quoted arguments and unquoted heredocs before `uc` runs. `--file` only helps if creating the file also avoids interpolation; `--` does not disable shell expansion.
+
+## Native tool handoff (experimental)
+
+When two registered conversations share a harness and the sender has a native tool that can reach the exact recipient, the agent can use that tool for delivery. `uc peers` already includes their native identities. It does not claim that any particular tool can reach them; native names can differ from Undercurrent labels.
+
+```sh
+uc prepare 'codex:<thread UUID>' --file findings.txt --in-reply-to '<Message ID>'
+```
+
+Preparation accepts the same inputs as send and applies the same registration, sender-socket freshness, message-validation, and project-permission checks. It returns `status: "prepared"`, the message ID, From/To addresses, a native `destination`, and complete envelope `text`. Exit 0 means preparation succeeded. It opens no delivery connection, stores no message, and includes no delivery evidence or socket path.
+
+The agent matches the destination to an available native tool and passes the complete text through its structured message argument. The [skill](skills/undercurrent/SKILL.md) covers identity matching and result handling. Preparation is a current policy snapshot, not a persistent permission grant; prepare again after a delay or target change. Native controls still apply, and Undercurrent cannot enforce subsequent policy changes inside another tool.
+
+Use `uc send` when no exact native route is available, and for cross-harness or remote destinations. Choose the route before attempting delivery. A native hold, refusal, failure, or uncertain result must not trigger an automatic retry through another route.
 
 ## Two settings: joining and permission
 

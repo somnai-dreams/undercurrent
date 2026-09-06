@@ -42,7 +42,9 @@ Run from a registered Codex task with an enabled policy file in its project. Thi
 
 The native deny rule wins even when the probe explicitly allows the messaging tool. The fixture also checks literal Unicode, newlines, quotes, backticks, shell substitutions, sender identity and message ID at the queue boundary.
 
-Live native message ID: `19589e48-4eef-42a3-aa66-f9c71bdc5d0d`. This is evidence of queue acceptance, not proof that a receiving model read it. `bun run check` passes: types, lint and 88 tests (845 assertions).
+Live native message ID: `19589e48-4eef-42a3-aa66-f9c71bdc5d0d`. After queue acceptance, this message arrived in the receiving Codex task's model context. Its Claude identity, native envelope, newlines, Unicode, quotes, backticks, `$(not-a-command)` and `$HOME` were intact. This verifies receipt for this one send; it does not fix the sender's inability to see downstream failure. No acknowledgment was sent.
+
+`bun run check` passes: types, lint and 88 tests (845 assertions).
 
 ## What this tells us
 

@@ -1,6 +1,6 @@
 # Verification
 
-The [native interception experiment](experiments/native-intercept/README.md) runs Claude's actual built-in discovery and send tools against a bridge, including native denial and downstream failure cases. One live bridge handoff was accepted by Codex's queue. It also demonstrates why this is not enabled in setup: native success confirms only the bridge hop, and the reverse Codex-native adapter is still absent.
+The [native interception experiment](experiments/native-intercept/README.md) runs Claude's actual built-in discovery and send tools against a bridge, including native denial and downstream failure cases. One live bridge handoff was accepted by Codex's queue and subsequently arrived intact in the receiving task's model context. It also demonstrates why this is not enabled in setup: native success confirms only the bridge hop, and the reverse Codex-native adapter is still absent.
 
 This records observed behavior, including incomplete live checks.
 

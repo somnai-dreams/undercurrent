@@ -17,6 +17,7 @@
     "lint": "bun --bun oxlint --type-aware src tests experiments",
     "test": "bun test ./tests",
     "probe:native": "bun experiments/native-intercept/probe.ts",
+    "probe:codex": "bun experiments/native-intercept/codex-probe.ts",
     "check": "bun run typecheck && bun run lint && bun run test"
   },
   "devDependencies": {

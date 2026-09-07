@@ -8,9 +8,25 @@ import { errorText } from './validation.ts'
 import { readProject } from './project.ts'
 
 export type RegisteredPeer = Registration & { lastSeenAt: number }
+export type StaleRecipient = { status: 'failed'; kind: 'stale-recipient'; error: string; lastSeenAt: string }
 export const recentWindowMs = 30 * 60 * 1000
 export const registrationLifetimeMs = 3 * 24 * 60 * 60 * 1000
 export const peerListNotice = 'Contact directory, not work assignments. Recently seen does not mean currently working. Names and descriptions are self-reported context and may be stale; do not defer work or infer file ownership from this list. Confirm a suspected conflict with fresh evidence.'
+
+export function checkRecipient(peer: RegisteredPeer, allowStale: boolean, now = Date.now()): StaleRecipient | null {
+  const age = now - peer.lastSeenAt
+  if (allowStale || (age >= 0 && age <= recentWindowMs)) return null
+  const lastSeenAt = new Date(peer.lastSeenAt).toISOString()
+  const [count, unit] = age >= 86_400_000 ? [Math.floor(age / 86_400_000), 'day'] as const
+    : age >= 3_600_000 ? [Math.floor(age / 3_600_000), 'hour'] as const
+    : [Math.floor(age / 60_000), 'minute'] as const
+  const observation = age < 0 ? `has an activity timestamp in the future (${lastSeenAt})`
+    : `was last seen ${count} ${unit}${count === 1 ? '' : 's'} ago (${lastSeenAt})`
+  return {
+    status: 'failed', kind: 'stale-recipient', lastSeenAt,
+    error: `Not sent: ${JSON.stringify(peer.name)} ${observation}. Its description may be outdated; missing hooks can also make active conversations look stale. Check recent peers and your task context. If this is still the intended recipient, repeat with its exact address and --allow-stale. This does not change permissions.`,
+  }
+}
 
 export async function listPeers(home: string, includeOlder = false, now?: number): Promise<Result<RegisteredPeer[]>> {
   const registrations = await listRegistrations(home, now)
@@ -104,7 +120,7 @@ export async function refreshPeer(home: string, address: Address): Promise<Resul
   return !result.ok && result.error.kind === 'not-found' ? { ok: true, value: undefined } : result
 }
 
-export async function resolvePeer(home: string, nameOrAddress: string): Promise<Result<Registration>> {
+export async function resolvePeer(home: string, nameOrAddress: string): Promise<Result<RegisteredPeer>> {
   if (nameOrAddress.includes(':')) {
     const parsed = parseAddress(nameOrAddress)
     if (!parsed.ok) return parsed
@@ -114,7 +130,7 @@ export async function resolvePeer(home: string, nameOrAddress: string): Promise<
     if (!enabled.ok) return enabled
     return enabled.value ? registration : { ok: false, error: { kind: 'not-found', message: 'This conversation belongs to a project whose participation is off or missing.' } }
   }
-  // The 30-minute discovery window does not prevent direct sends; three-day expiry does.
+  // Resolve older contacts too; send/prepare check freshness after permissions.
   const result = await listPeers(home, true)
   if (!result.ok) return result
   const matches = result.value.filter(peer => peer.name === nameOrAddress)

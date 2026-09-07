@@ -5,8 +5,9 @@ import { join, resolve } from 'node:path'
 import { currentDestination, discoveryProject } from './current.ts'
 import { addressOf, formatAddress } from './data.ts'
 import type { Failure, Provider, Registration, Result } from './data.ts'
-import { joinPeer, leavePeer, listPeers, peerListNotice, recentWindowMs, resolvePeer } from './registry.ts'
-import { createMessage, sendMessage } from './send.ts'
+import { checkRecipient, joinPeer, leavePeer, listPeers, peerListNotice, recentWindowMs, resolvePeer } from './registry.ts'
+import type { StaleRecipient } from './registry.ts'
+import { createMessage, envelope, sendMessage } from './send.ts'
 import type { SendOutcome } from './send.ts'
 import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
 import { formatRemoteAddress, parseRemoteAddress } from './remote-protocol.ts'
@@ -36,7 +37,7 @@ type Command =
   | { kind: 'peers'; all: boolean }
   | { kind: 'leave' }
   | { kind: 'remote' | 'relay'; args: string[] }
-  | { kind: 'send'; target: string; source: TextSource; inReplyTo: string | null }
+  | { kind: 'send' | 'prepare'; target: string; source: TextSource; inReplyTo: string | null; allowStale: boolean }
 
 const help = `Undercurrent — messages between existing agent conversations.
 
@@ -53,6 +54,7 @@ Usage:
   uc send <label|address> --file <path> [--in-reply-to <message UUID>]
   uc send <label|address> --stdin [--in-reply-to <message UUID>]
   uc send <label|address> 'plain text' [--in-reply-to <message UUID>]
+  uc prepare <label|address> --file <path> [--in-reply-to <message UUID>]
   uc leave
 
 Remote (optional):
@@ -87,11 +89,16 @@ is auto + self; existing settings are preserved. self includes linked worktrees
 of the same Git repository; each checkout's policy still applies. Prompt,
 tool-completion and stop hooks refresh existing registrations. Registry reads
 delete registrations after three days without activity; rejoin to return.
-Until then, older peers remain directly addressable.
+send and prepare refuse recipients last seen over 30 minutes ago. Check the
+recipient, then use its exact address with --allow-stale for an intentional send.
+This overrides freshness only, not permissions or three-day expiry.
 Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.
 Submitted means queued in Codex or written to Claude's socket, not read.
+prepare accepts the same text inputs as send, for local peers in your harness.
+It checks permissions and returns a prepared message for a native tool; exit 0
+means prepared, never submitted. Match the exact destination in that tool first.
 Messages are limited to 32 KiB. No automatic retries or recipient startup.
 
 Environment:
@@ -212,7 +219,8 @@ async function main(args: string[]): Promise<number> {
       console.log(JSON.stringify({ status: 'left', address: formatAddress(address) }))
       return 0
     }
-    case 'send': {
+    case 'send':
+    case 'prepare': {
       const attached = await resolvePeer(home, formatAddress(address))
       if (!attached.ok) {
         return fail({ ok: false, error: { kind: attached.error.kind, message: `The current conversation must be attached before sending. Run uc join --name <label>. ${attached.error.message}` } })
@@ -227,28 +235,41 @@ async function main(args: string[]): Promise<number> {
       if (!text.ok) return fail(text)
       const message = createMessage(address, text.value, command.value.inReplyTo)
       if (!message.ok) return fail(message)
-      let outcome: SendOutcome
+      let outcome: SendOutcome | StaleRecipient
       let to: string
       if (command.value.target.startsWith('remote:')) {
+        if (command.value.kind === 'prepare') return fail(invalidInput('Native handoffs support local peers in your current harness. Use uc send for remote destinations.'))
         const recipient = parseRemoteAddress(command.value.target)
         if (!recipient.ok) return fail(recipient)
         to = formatRemoteAddress(recipient.value)
-        outcome = await sendRemote(home, recipient.value, message.value)
+        outcome = await sendRemote(home, recipient.value, message.value, command.value.allowStale)
       } else {
         const recipient = await resolvePeer(home, command.value.target)
         if (!recipient.ok) return fail(recipient)
         const permitted = await authorizeLocal(home, attached.value.projectRoot, recipient.value.projectRoot)
         if (!permitted.ok) return fail(permitted)
+        const destination = addressOf(recipient.value.destination)
+        to = formatAddress(destination)
+        const stale = checkRecipient(recipient.value, command.value.allowStale)
+        if (stale !== null) {
+          console.log(JSON.stringify({ ...stale, to }))
+          return 1
+        }
+        if (command.value.kind === 'prepare') {
+          if (destination.provider !== current.value.provider) return fail(invalidInput('Native handoffs support local peers in your current harness. Use uc send across harnesses.'))
+          console.log(JSON.stringify({ status: 'prepared', messageId: message.value.id, createdAt: message.value.createdAt, from: formatAddress(address), to, destination, text: envelope(message.value) }))
+          return 0
+        }
         const codexBin = process.env['UNDERCURRENT_CODEX_BIN']
         if (recipient.value.destination.provider === 'codex' && codexBin !== undefined && codexBin.trim() === '') {
           return fail(invalidInput('UNDERCURRENT_CODEX_BIN must be a nonempty executable path.'))
         }
-        to = formatAddress(addressOf(recipient.value.destination))
         outcome = await sendMessage(recipient.value.destination, message.value, codexBin === undefined ? {} : { codexCommand: [codexBin] })
       }
       console.log(JSON.stringify({
         ...outcome,
         messageId: message.value.id,
+        createdAt: message.value.createdAt,
         from: formatAddress(address),
         to,
       }))
@@ -316,7 +337,8 @@ function parseCommand(args: string[]): Result<Command> {
       if (args.length !== 1) return invalidInput(`Usage: uc ${command}.`)
       return { ok: true, value: { kind: command } }
     case 'send':
-      return parseSend(args.slice(1))
+    case 'prepare':
+      return parseSend(command, args.slice(1))
     case 'remote':
     case 'relay':
       if (args[1] === '--help') return { ok: true, value: { kind: 'help' } }
@@ -326,15 +348,20 @@ function parseCommand(args: string[]): Result<Command> {
   }
 }
 
-function parseSend(args: string[]): Result<Command> {
+function parseSend(kind: 'send' | 'prepare', args: string[]): Result<Command> {
   let target: string | null = null
   let source: TextSource | null = null
   let inReplyTo: string | null = null
+  let allowStale = false
   let positionalOnly = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!
     if (!positionalOnly && arg.startsWith('-')) {
       switch (arg) {
+        case '--allow-stale':
+          if (allowStale) return invalidInput('Supply --allow-stale only once.')
+          allowStale = true
+          continue
         case '--':
           positionalOnly = true
           continue
@@ -362,7 +389,7 @@ function parseSend(args: string[]): Result<Command> {
           continue
         }
         default:
-          return invalidInput(`Unknown send option ${JSON.stringify(arg)}. Use -- before text that begins with a dash.`)
+          return invalidInput(`Unknown ${kind} option ${JSON.stringify(arg)}. Use -- before text that begins with a dash.`)
       }
     }
     if (target === null) {
@@ -373,8 +400,9 @@ function parseSend(args: string[]): Result<Command> {
       return invalidInput('Choose one message source: quoted text, --file, or stdin. Quote message text as one argument.')
     }
   }
-  if (target === null || target === '') return invalidInput('Usage: uc send <label|address> ["message" | --file <path> | --stdin].')
-  return { ok: true, value: { kind: 'send', target, source: source ?? { kind: 'stdin' }, inReplyTo } }
+  if (target === null || target === '') return invalidInput(`Usage: uc ${kind} <label|address> ["message" | --file <path> | --stdin].`)
+  if (allowStale && !target.includes(':')) return invalidInput('--allow-stale requires an exact recipient address. Check uc peers --all.')
+  return { ok: true, value: { kind, target, source: source ?? { kind: 'stdin' }, inReplyTo, allowStale } }
 }
 
 async function readText(source: TextSource): Promise<Result<string>> {

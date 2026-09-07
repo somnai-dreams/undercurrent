@@ -4,7 +4,7 @@ Undercurrent connects existing conversations on trusted machines through a small
 
 This first experiment targets two machines, one invitation, and participating projects on each side. Local messaging continues to work without any remote setup.
 
-Discovery shows conversations seen within 30 minutes on the receiving machine. Use `uc remote peers <pairing UUID> --all` for contacts seen within three days; each result includes `lastSeenAt`. Receiver registry reads delete older registrations, including during direct sends. Expiry leaves the pairing intact; the conversation can rejoin. These are contact records, not current work assignments. Upgrade the relay and both bridges together for this discovery format; saved identity and pairing files are unchanged.
+Discovery shows conversations seen within 30 minutes on the receiving machine. Use `uc remote peers <pairing UUID> --all` for contacts seen within three days; each result includes `lastSeenAt`. Receiver registry reads delete older registrations, including during direct sends. Expiry leaves the pairing intact; the conversation can rejoin. These are contact records, not current work assignments. Messages carry the sender's `createdAt` timestamp unchanged through the relay. Upgrade the relay and both bridges together for this message and discovery format; saved identity and pairing files are unchanged.
 
 ## Trust and sharing
 
@@ -102,10 +102,13 @@ Remote addresses are relative to your machine: the pairing identifies its other 
 | Observation | Result |
 | --- | --- |
 | No receiver connection, invalid contact, or no permission | Failed; no native handoff was made. |
+| Recipient last seen over 30 minutes ago | Failed with `kind: stale-recipient` and `lastSeenAt`; no native handoff was made. |
 | Receiving native adapter reports success | Submitted, with its original Codex or Claude evidence. |
 | Forwarded, then disconnected or no receipt within the deadline | Uncertain; the native handoff may still finish. |
 
-The sender never treats relay acceptance as native submission. A successful native handoff still does not mean an agent read or admitted the message. A refused TCP connection is a definite failure in the tested Bun version. A connection reset can occur after the complete message was consumed, including before any response headers, so it remains uncertain. Unclassified transport errors also remain uncertain. There is no automatic message retry, deduplication guarantee, ordering guarantee, or offline delivery.
+The sender never treats relay acceptance as native submission. A successful native handoff still does not mean an agent read or admitted the message. A refused TCP connection is a definite failure in the tested Bun version. A connection reset can occur after the complete message was consumed, including before any response headers, so it remains uncertain. Unclassified transport errors also remain uncertain. There is no automatic message retry, deduplication guarantee, ordering guarantee, or relay mailbox. The destination's native queue can retain a submitted message while its conversation is unloaded.
+
+The receiving bridge checks recipient activity using its own clock and current registration, after project permissions. `uc send '<remote exact address>' --file message.txt --allow-stale` explicitly allows an older recipient without bypassing permissions or three-day expiry. The relay forwards this choice and the resulting freshness feedback; it does not infer activity. Upgrade the relay and both bridges together for this delivery format. These checks do not recall or expire messages already in a native queue.
 
 The relay stores one credential per machine, contact relationships with a pairing UUID and two machine IDs, and unused invitations in one private JSON file. Keep that file across restarts. Run one relay process per state file. Connections and pending receipts exist only in memory. Each machine stores one remote identity alongside its local registrations; allow-lists come from global `config.json` defaults and project `.undercurrent.json` overrides. There are no remote copies of native transcripts. Sends and peer discovery each use one request; they do not fetch contact credentials first.
 

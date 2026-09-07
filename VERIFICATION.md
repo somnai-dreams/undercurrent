@@ -1,5 +1,27 @@
 # Verification
 
+This records observed behavior, including incomplete live checks.
+
+## Sender feedback for stale recipients — 7 September 2026
+
+`uc send` and `uc prepare` now refuse recipients outside the existing 30-minute discovery window before native handoff. The failure includes `kind: stale-recipient`, the exact destination, `lastSeenAt`, and guidance to reconsider the recipient. A future activity timestamp also fails visibly. `--allow-stale` requires an exact address, and cannot bypass project permissions, attachment or three-day expiry. Replies get the same check. The remote bridge evaluates activity after permissions using its own registration and clock; its feedback and the explicit override pass through the relay. No registration format, settings or installed integrations changed.
+
+Types, lint and all 100 tests pass (1,060 assertions, 10.01 seconds). Local CLI fixtures verify no native invocation or prepared envelope on refusal, exact-address override, reply handling, and permissions/expiry under override. Boundary fixtures cover precisely 30 minutes, future clocks and unchanged activity metadata. The remote CLI and bridge fixtures prove that no native process or socket is used on refusal, that feedback reaches the sender, and that intentional older-recipient delivery preserves its message. Remote parsing rejects malformed override and feedback fields. The final affected-suite rerun passes 52 tests (670 assertions). The agent skill passes its validator, limits routine progress broadcasts and leaves recipient selection with the sending agent.
+
+This prevents new sends to stale recipients by default; it neither removes existing native queue entries nor implements the proposed one-pending-message limit. No live peer was contacted and no native queue was edited for this slice. Relay and bridges must be upgraded together for the new delivery fields.
+
+## Native handoff dogfood and message timestamps — 7 September 2026
+
+The native handoff branch includes main's discovery and retention changes. At this snapshot preparation accepted older contacts inside the three-day retention period; the sender-feedback slice above subsequently added the explicit freshness check. Expired senders or recipients fail without dispatch, and rejoining restores preparation. Every message receives one canonical UTC `createdAt` value when created. The rendered envelope, prepared/send JSON, and remote transport preserve it. It is the sender's clock reading, not a delivery receipt or a cross-machine ordering guarantee. The current remote wire format requires upgrading the relay and both bridges together; persisted identities and pairings are unchanged.
+
+Types, lint and all 98 tests pass (1,001 assertions, 10.46 seconds), with permission to open the suite's temporary sockets and loopback listeners. Coverage includes preparation after discovery/retention expiry, delayed rendering, distinct reply creation times, malformed remote timestamps, and timestamp preservation through remote delivery. The agent skill validator and `git diff --check` pass.
+
+The user approved a temporary Codex desktop task, `01a079b0-8ed3-7931-86c7-7289d211bd07`, for a real native round trip with coordinator `01a06f6d-bdbd-7822-a985-3337ea851a95`. Both registered their actual native IDs in an isolated test registry under the existing project policy. Each sender matched the exact native task ID, ran the branch's `uc prepare`, and passed its complete text as a structured argument to the desktop's existing-task messaging tool. No courier fallback was used. Native tools returned the destination ID without error, but supplied no queued/read status; the subsequent model-visible replies establish receipt separately.
+
+An idle-recipient request, `b35a9102-0103-4243-9809-3386b88e1f42`, carried creation time `2026-09-07T02:32:23.982Z`. Reply `8d8728b9-917e-46f6-a2f9-ac1d88ed7076` arrived in the coordinator's model context with correct threading, a new creation time, and the original timestamp and multiline Unicode, quotes, backticks, shell substitutions and variables reproduced literally. A second probe, `61e873a0-e196-4c89-8e65-c3a741d45de4`, was dispatched after a native status snapshot confirmed the recipient's review turn was active. Its threaded reply, `f95288f8-2708-4fe0-b103-bde9b9300005`, confirmed intact text and timestamp. The peer consumed that probe after its waiting command finished, while the same review turn remained active. This verifies active-turn receipt, not interruption of an in-flight tool.
+
+The peer reviewed commit `be3baf0` without editing files and found no material correctness issue in preparation, identity matching, policy checks or timestamp propagation. Review reply `00da4063-9463-45dd-982f-3261081faef2` also arrived through the native tool with its original reply reference and creation time. The peer inspected tests; the full suite above was run by the coordinator. Both participants removed their own isolated test registrations after completion. The installed main checkout, project/global permissions and native settings were unchanged. Claude-to-Claude native handoff and a two-machine remote exchange remain unverified; the skill requires an exact native match before attempting that route.
+
 ## Registration retention — 6 September 2026
 
 Registry reads now delete registrations after three days without activity, including from `--all` and exact-address resolution. The 30-minute default discovery window is unchanged. Expiry removes only the registration; native conversations, project policies and remote pairings are unaffected. Automatic startup/resume can rejoin, while manual sessions need `uc join`.
@@ -16,9 +38,15 @@ Types, lint and 85 tests pass (791 assertions, 7.11 seconds). New cases cover th
 
 An isolated Claude Code 2.1.263 run used the actual installed hook commands and a loopback model fixture that invoked only native `ListAgents`. `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` all reported success. Artificially aged registration metadata was refreshed after the native tool and again at Stop. No model service or existing peer was contacted. The first fixture run mishandled an optional HEAD request; after fixing that fixture endpoint, the complete run exited successfully. Codex event commands are covered by the installation fixtures; native hook trust still requires the owner's review.
 
-5 September 2026. This records observed behavior, including incomplete live checks.
+## Native tool handoff prototype — 6 September 2026
 
-## Automated checks
+`uc prepare` shares the CLI's sender, message, recipient, and project-policy checks with `uc send`, then returns a prepared envelope and exact native identity without invoking delivery. Fixtures cover both harnesses, unchanged registrations, literal file/stdin text, reply references, missing and ambiguous peers, stale sender sockets, current permissions after changing directories, worktrees, and rejection of cross-harness or remote preparation.
+
+The full check passes: 86 tests, 831 assertions, types, and lint. The suite requires permission to open its temporary sockets and loopback listeners; the first sandboxed full run could not open those fixtures, and the rerun with that access passed. Skill validation and packaging also pass. The installed main checkout was left in place while this prototype was built in an isolated branch.
+
+At this snapshot, live handoff through the agent-facing native tools was unverified. The 7 September dogfood above verifies Codex-to-Codex handoff; whether Claude's native discovery exposes enough identity information to match an Undercurrent registration exactly remains unverified. The skill uses the courier when an exact native match cannot be established before sending. A prepared result is not submission evidence, and its permission check is a snapshot: subsequent native-tool delivery is governed by that host and the agent following the skill.
+
+## Automated checks — 5 September 2026
 
 `bun run check` passes strict TypeScript 7, type-aware lint, and 81 tests (734 assertions), including the remote prototype, project policies, linked worktrees, global setup, and packaged installation. Local coverage includes exact native addresses, duplicate labels, simultaneous registrations, malformed data, attachment and rejoining, literal multiline and Unicode text, CLI input sources, native failures, and timeouts without retries. Socket and loopback relay fixtures need the host's normal permission to open their local listeners.
 
@@ -125,6 +153,6 @@ The review's proposed rule that every non-abort fetch rejection means no submiss
 
 ## Remaining checks
 
-Fixture coverage establishes distinct addresses in one registry, but does not replace two live same-provider conversations. Live stopped/unloaded Codex targets, a resumed Claude session, and host-held or refused inbox messages have not been exercised. These remain compatibility checks, not product guarantees. Other native versions and Codex terminal reception are unverified.
+Two live Codex desktop conversations exchanged prepared envelopes through native tools as recorded above. Two live Claude conversations, stopped/unloaded Codex targets, a resumed Claude session, and host-held or refused inbox messages have not been exercised. These remain compatibility checks, not product guarantees. Other native versions and Codex terminal reception are unverified.
 
 The remote prototype still needs two physical machines through a trusted HTTPS relay, including real sleep, disconnection, reconnect, and revocation observations. HTTPS deployment, native access from a separately launched bridge, and how frequently live-only messaging becomes inconvenient are unverified. Offline storage should be reconsidered only after that experiment.

@@ -57,7 +57,7 @@ describe('remote enrollment and project sharing', () => {
     expect(unwrap(await remoteContacts(join(home, 'machine'))).map(contact => contact.id)).toEqual([accepted.contactId])
   })
 
-  test('remote discovery expires at the owner, all includes older peers, and direct sends remain usable', async () => {
+  test('the receiving bridge refuses stale recipients, preserving context and explicit override across the relay', async () => {
     const pair = await pairedMachines()
     const native = await nativeSocket(join(pair.home, 'old.sock'))
     const target = { name: 'old-peer', destination: { provider: 'claude' as const, sessionId: targetId, socketPath: native.path } }
@@ -72,7 +72,14 @@ describe('remote enrollment and project sharing', () => {
     const before = await readFile(path, 'utf8')
     expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toEqual([])
     expect(unwrap(await remotePeers(pair.aHome, pair.contactId, true))).toEqual([{ name: target.name, address: addressOf(target.destination), allowed: true, lastSeenAt: old.getTime() }])
-    const outcome = await sendRemote(pair.aHome, { provider: 'remote', contactId: pair.contactId, peer: addressOf(target.destination) }, unwrap(createMessage(addressOf(sender.destination), 'Direct reply to an older contact.', null)))
+    let connections = 0
+    servers[servers.length - 1]!.on('connection', () => { connections += 1 })
+    const remoteTarget: RemoteAddress = { provider: 'remote', contactId: pair.contactId, peer: addressOf(target.destination) }
+    const olderMessage = unwrap(createMessage(addressOf(sender.destination), 'Direct reply to an older contact.', null))
+    const refused = await sendRemote(pair.aHome, remoteTarget, olderMessage)
+    expect(refused).toMatchObject({ status: 'failed', kind: 'stale-recipient', lastSeenAt: old.toISOString() })
+    expect(connections).toBe(0)
+    const outcome = await sendRemote(pair.aHome, remoteTarget, olderMessage, true)
     expect(outcome.status).toBe('submitted')
     expect(await native.received).toContain('Direct reply to an older contact.')
     // A socket write is not evidence that the recipient itself became active.
@@ -88,6 +95,10 @@ describe('remote enrollment and project sharing', () => {
     expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
     expect(await Bun.file(path).exists()).toBe(false)
     expect(unwrap(await remotePeers(pair.aHome, pair.contactId, true))).toEqual([])
+    unwrap(await joinPeer(pair.bHome, target))
+    await utimes(path, expired, expired)
+    expect((await sendRemote(pair.aHome, to, message, true)).status).toBe('failed')
+    expect(await Bun.file(path).exists()).toBe(false)
     unwrap(await joinPeer(pair.bHome, target))
     expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toHaveLength(1)
     await utimes(path, expired, expired)
@@ -110,13 +121,14 @@ describe('remote enrollment and project sharing', () => {
     const unsharedSource = await sendRemote(pair.aHome, to, message)
     expect(unsharedSource.status).toBe('failed')
     unwrap(await allowContact(pair.aHome, pair.contactId.toUpperCase()))
-    expect((await sendRemote(pair.aHome, to, message)).status).toBe('failed')
+    expect((await sendRemote(pair.aHome, to, message, true)).status).toBe('failed')
     unwrap(await allowContact(pair.bHome, pair.contactId))
     expect(unwrap(await remotePeers(pair.aHome, pair.contactId))).toMatchObject([{ name: 'receiver', address: addressOf(target.destination), allowed: true }])
     expect(await sendRemote(pair.aHome, to, message)).toEqual({ status: 'submitted', evidence: 'claude-socket' })
     const firstFrame = await first.received
     expect(firstFrame).toContain(`remote:${pair.contactId}/codex:`)
     expect(firstFrame).toContain(JSON.stringify(message.text).slice(1, -1))
+    expect(firstFrame).toContain(`Created at: ${message.createdAt}`)
     expect(firstFrame).not.toContain(pair.a.ownerToken)
     expect(firstFrame).not.toContain(pair.b.ownerToken)
     unwrap(await joinPeer(pair.bHome, { name: 'receiver', destination: { provider: 'claude', sessionId: targetId, socketPath: second.path } }))

@@ -2,7 +2,8 @@ import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { addressOf, formatAddress, parseNativeAddress } from './data.ts'
 import type { Failure, Registration, Result } from './data.ts'
-import { listPeers, resolvePeer } from './registry.ts'
+import { checkRecipient, listPeers, resolvePeer } from './registry.ts'
+import type { StaleRecipient } from './registry.ts'
 import { hasPermission, readProject } from './project.ts'
 import {
   decodeInvitation, encodeInvitation, maxFrameBytes, parseContacts, parseDelivery,
@@ -109,7 +110,7 @@ export async function remotePeers(home: string, contactId: string, all = false):
   }
 }
 
-export async function sendRemote(home: string, to: RemoteAddress, message: Message): Promise<SendOutcome> {
+export async function sendRemote(home: string, to: RemoteAddress, message: Message, allowStale = false): Promise<SendOutcome | StaleRecipient> {
   if (message.from.provider === 'remote') return { status: 'failed', error: 'Remote messages cannot be forwarded as another contact. Send from the current local conversation.' }
   const target = parseNativeAddress(to.peer)
   if (!target.ok) return { status: 'failed', error: target.error.message }
@@ -127,7 +128,9 @@ export async function sendRemote(home: string, to: RemoteAddress, message: Messa
     'x-from': formatAddress(message.from),
     'x-to': formatAddress(target.value),
     'x-request': message.id,
+    'x-created-at': message.createdAt,
     'x-contact': contactId.value,
+    'x-allow-stale': String(allowStale),
   }
   if (message.inReplyTo !== null) headers['x-in-reply-to'] = message.inReplyTo
   const response = await requestJson(identity.value.origin, '/send', 'POST', identity.value.ownerToken, message.text, headers)
@@ -261,6 +264,8 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
       const shared = await projectShares(home, peer.value, delivery.contactId)
       if (!shared.ok) return { status: 'failed', error: shared.error.message }
       if (!shared.value) return { status: 'failed', error: `This project does not allow your contact. Its owner can run uc allow contact:${delivery.contactId}.` }
+      const stale = checkRecipient(peer.value, delivery.allowStale)
+      if (stale !== null) return stale
       return sendMessage(peer.value.destination, {
         ...delivery.message,
         from: { provider: 'remote', contactId: delivery.contactId, peer: delivery.message.from },

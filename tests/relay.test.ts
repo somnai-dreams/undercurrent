@@ -112,7 +112,7 @@ async function bridge(server: Relay, machine: RemoteIdentity) {
 function send(server: Relay, from: RemoteIdentity, contactId: string, text = 'hello', id = crypto.randomUUID(), extraHeaders?: Record<string, string>): Promise<Response> {
   return fetch(new URL('/send', server.url), {
     method: 'POST', body: text,
-    headers: { authorization: `Bearer ${from.ownerToken}`, 'x-contact': contactId, 'x-from': nativeFrom, 'x-to': nativeTo, 'x-request': id, ...extraHeaders },
+    headers: { authorization: `Bearer ${from.ownerToken}`, 'x-contact': contactId, 'x-from': nativeFrom, 'x-to': nativeTo, 'x-request': id, 'x-created-at': '2026-09-07T02:00:00.000Z', ...extraHeaders },
   })
 }
 
@@ -121,6 +121,21 @@ function discover(server: Relay, from: RemoteIdentity, contactId: string): Promi
     method: 'POST', headers: { authorization: `Bearer ${from.ownerToken}`, 'x-contact': contactId },
   })
 }
+
+test('remote messages require a canonical creation timestamp and preserve it through parsing', () => {
+  const delivery: Delivery = {
+    type: 'send', requestId: crypto.randomUUID(), contactId: crypto.randomUUID(),
+    allowStale: false,
+    to: { provider: 'codex', threadId: crypto.randomUUID() },
+    message: { id: crypto.randomUUID(), from: { provider: 'claude', sessionId: crypto.randomUUID() }, text: 'Original timestamp.', inReplyTo: null, createdAt: '2026-09-07T02:00:00.000Z' },
+  }
+  expect(parseDelivery(delivery)).toEqual({ ok: true, value: delivery })
+  for (const allowStale of [undefined, null, 'true', 1]) expect(parseDelivery({ ...delivery, allowStale }).ok).toBe(false)
+  expect(parseDelivery({ ...delivery, allowStale: true }).ok).toBe(true)
+  for (const createdAt of [undefined, null, 0, '', 'yesterday', '2026-02-30T02:00:00.000Z', '2026-09-07T12:00:00.000+10:00']) {
+    expect(parseDelivery({ ...delivery, message: { ...delivery.message, createdAt } }).ok).toBe(false)
+  }
+})
 
 test('remote protocol keeps origins, native identities, and receipts at their boundaries', () => {
   for (const origin of ['https://relay.example/path', 'https://user:pass@relay.example', 'https://relay.example?x=1', 'https://relay.example#x', 'http://relay.example', 'https://relay.example/../']) {
@@ -134,8 +149,12 @@ test('remote protocol keeps origins, native identities, and receipts at their bo
   if (!parsed.ok) throw new Error(parsed.error.message)
   expect(formatRemoteAddress(parsed.value)).toBe(address)
   expect(parseRemoteAddress(address.replace('/', ':')).ok).toBe(false)
-  expect(parseDelivery({ type: 'send', requestId: crypto.randomUUID(), contactId: crypto.randomUUID(), to: { provider: 'claude', sessionId: crypto.randomUUID(), socketPath: '/attacker.sock' }, message: {} }).ok).toBe(false)
+  expect(parseDelivery({ type: 'send', requestId: crypto.randomUUID(), contactId: crypto.randomUUID(), allowStale: false, to: { provider: 'claude', sessionId: crypto.randomUUID(), socketPath: '/attacker.sock' }, message: {} }).ok).toBe(false)
   expect(parseReceipt({ type: 'receipt', requestId: crypto.randomUUID(), result: { status: 'read' } }).ok).toBe(false)
+  const receipt = { type: 'receipt', requestId: crypto.randomUUID(), result: { status: 'failed', kind: 'stale-recipient', error: 'Check the intended recipient.', lastSeenAt: '2026-09-05T02:00:00.000Z' } } as const
+  expect(parseReceipt(receipt)).toEqual({ ok: true, value: receipt })
+  for (const lastSeenAt of [null, 0, 'yesterday']) expect(parseReceipt({ ...receipt, result: { ...receipt.result, lastSeenAt } }).ok).toBe(false)
+  expect(parseReceipt({ ...receipt, result: { ...receipt.result, status: 'uncertain' } }).ok).toBe(false)
 })
 
 test('invitation redemption is atomic, single use, durable, and exposes no contact secrets', async () => {
@@ -183,6 +202,7 @@ test('routing binds receipt to its bridge and distinct dispatch ID while preserv
   expect(delivery.contactId).toBe(peers.contactId)
   expect(delivery.message.id).toBe(messageId)
   expect(delivery.message.text).toBe(text)
+  expect(delivery.message.createdAt).toBe('2026-09-07T02:00:00.000Z')
   a.receipt(delivery.requestId, { status: 'failed', error: 'Forged receipt from another owner connection' })
   b.receipt(delivery.requestId, accepted)
   expect(await object(await response)).toEqual(accepted)

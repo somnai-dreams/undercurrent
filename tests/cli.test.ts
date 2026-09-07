@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { recentWindowMs, registrationLifetimeMs } from '../src/registry.ts'
+import { isObject } from '../src/validation.ts'
 
 type Fixture = { home: string; executable: string; capture: string }
 type CommandResult = { exitCode: number; stdout: string; stderr: string }
@@ -18,6 +20,175 @@ afterEach(async () => {
 })
 
 describe('CLI', () => {
+  test('send and prepare return stale recipient context without dispatch, with an exact-address override', async () => {
+    const fixture = await joinedPair()
+    const identity = { CODEX_THREAD_ID: sender }
+    const path = join(fixture.home, 'peers', `codex:${recipient}.json`)
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    await utimes(path, old, old)
+    const before = await readFile(path, 'utf8')
+    for (const command of ['send', 'prepare']) {
+      for (const target of ['review', `codex:${recipient}`]) {
+        const rejected = await run(fixture, identity, [command, target, 'Check the recipient.', '--in-reply-to', replyId])
+        expect(rejected.exitCode).toBe(1)
+        expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'stale-recipient', to: `codex:${recipient}`, lastSeenAt: old.toISOString() })
+        expect(rejected.stdout).toContain('2 days ago')
+        expect(output(rejected)).not.toHaveProperty('text')
+        expect(await Bun.file(fixture.capture).exists()).toBe(false)
+      }
+      expect(output(await run(fixture, identity, [command, 'review', 'Wrong override target.', '--allow-stale']))).toMatchObject({ kind: 'invalid-input' })
+      expect(output(await run(fixture, identity, [command, `codex:${recipient}`, 'Duplicate flag.', '--allow-stale', '--allow-stale']))).toMatchObject({ kind: 'invalid-input' })
+    }
+    expect(output(await run(fixture, identity, ['prepare', `codex:${recipient}`, 'Intentional preparation.', '--allow-stale']))).toMatchObject({ status: 'prepared' })
+    expect(await Bun.file(fixture.capture).exists()).toBe(false)
+    expect(output(await run(fixture, identity, ['send', `codex:${recipient}`, 'Intentional send.', '--allow-stale']))).toMatchObject({ status: 'submitted' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+    await rm(fixture.capture)
+    await writeFile(join(fixture.home, '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
+    for (const command of ['send', 'prepare']) {
+      const denied = await run(fixture, identity, [command, `codex:${recipient}`, 'Override is not permission.', '--allow-stale'])
+      expect(output(denied)).toMatchObject({ status: 'failed', kind: 'not-allowed' })
+      expect(output(denied)).not.toHaveProperty('lastSeenAt')
+    }
+    expect(await Bun.file(fixture.capture).exists()).toBe(false)
+  })
+
+  test('native preparation allows explicitly selected older contacts but rejects expired recipients and senders', async () => {
+    const fixture = await joinedPair()
+    const identity = { CODEX_THREAD_ID: sender }
+    const senderPath = join(fixture.home, 'peers', `codex:${sender}.json`)
+    const recipientPath = join(fixture.home, 'peers', `codex:${recipient}.json`)
+    const old = new Date(Date.now() - recentWindowMs - 60_000)
+    const expired = new Date(Date.now() - registrationLifetimeMs - 60_000)
+    await utimes(recipientPath, old, old)
+    const before = await readFile(recipientPath, 'utf8')
+    expect(output(await run(fixture, identity, ['prepare', `codex:${recipient}`, 'Older contact.', '--allow-stale']))).toMatchObject({ status: 'prepared', to: `codex:${recipient}` })
+    expect(await readFile(recipientPath, 'utf8')).toBe(before)
+
+    for (const target of ['review', `codex:${recipient}`]) {
+      expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
+      await utimes(recipientPath, expired, expired)
+      const rejected = await run(fixture, identity, ['prepare', target, 'Expired contact.', ...(target.includes(':') ? ['--allow-stale'] : [])])
+      expect(rejected.exitCode).toBe(1)
+      expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'not-found' })
+      expect(output(rejected)).not.toHaveProperty('text')
+      expect(await Bun.file(recipientPath).exists()).toBe(false)
+    }
+    expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
+    expect(output(await run(fixture, identity, ['prepare', 'review', 'After rejoin.']))).toMatchObject({ status: 'prepared' })
+    await utimes(senderPath, expired, expired)
+    const rejected = await run(fixture, identity, ['prepare', 'review', 'Expired sender.'])
+    expect(rejected.exitCode).toBe(1)
+    expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'not-found' })
+    expect(await Bun.file(senderPath).exists()).toBe(false)
+    expect(await Bun.file(fixture.capture).exists()).toBe(false)
+  })
+
+  test('prepares a literal native message without delivering it or changing registrations', async () => {
+    const fixture = await joinedPair()
+    const text = '  Review `code` and $(expressions); keep "$HOME", λ 🦉 and newlines.\nSecond line.\n'
+    const path = join(fixture.home, 'native message.txt')
+    await writeFile(path, text)
+    const directory = join(fixture.home, 'peers')
+    const files = await readdir(directory)
+    const before = await Promise.all(files.map(file => readFile(join(directory, file), 'utf8')))
+    for (const args of [
+      ['prepare', 'review', '--file', path],
+      ['prepare', `codex:${recipient}`, '--stdin'],
+      ['prepare', 'review', text],
+    ]) {
+      const result = await run(fixture, { CODEX_THREAD_ID: sender }, [...args, '--in-reply-to', replyId], { stdin: text })
+      expect(result.exitCode).toBe(0)
+      expect(result.stderr).toBe('')
+      const prepared = output(result)
+      if (!isObject(prepared)) throw new Error('Expected prepared message object')
+      const createdAt = prepared['createdAt']
+      if (typeof createdAt !== 'string') throw new Error('Missing creation timestamp')
+      expect(new Date(createdAt).toISOString()).toBe(createdAt)
+      expect(prepared).toHaveProperty('text', expect.stringContaining(`Created at: ${createdAt}\n`))
+      expect(prepared).toMatchObject({ status: 'prepared', from: `codex:${sender}`, to: `codex:${recipient}`, destination: { provider: 'codex', threadId: recipient } })
+      expect(prepared).toHaveProperty('messageId', expect.stringMatching(/^[0-9a-f-]{36}$/))
+      expect(prepared).toHaveProperty('text', expect.stringContaining(`From: codex:${sender}\nIn reply to: ${replyId}\n`))
+      expect(prepared).toHaveProperty('text', expect.stringContaining(`--- message text ---\n${text}`))
+      expect(prepared).not.toHaveProperty('evidence')
+    }
+    expect(await Bun.file(fixture.capture).exists()).toBeFalse()
+    expect(await readdir(directory)).toEqual(files)
+    expect(await Promise.all(files.map(file => readFile(join(directory, file), 'utf8')))).toEqual(before)
+  })
+
+  test('prepares Claude session identity without exposing a socket or needing it to be online', async () => {
+    const fixture = await makeFixture()
+    const identity = { CLAUDE_CODE_SESSION_ID: sender, CLAUDE_CODE_MESSAGING_SOCKET: join(fixture.home, 'sender.sock') }
+    const peer = { CLAUDE_CODE_SESSION_ID: recipient, CLAUDE_CODE_MESSAGING_SOCKET: join(fixture.home, 'recipient.sock') }
+    expect((await run(fixture, identity, ['join', '--name', 'sender'])).exitCode).toBe(0)
+    expect((await run(fixture, peer, ['join', '--name', 'review'])).exitCode).toBe(0)
+    const result = await run(fixture, identity, ['prepare', 'review', 'A prepared message is not proof of reachability.'])
+    expect(result.exitCode).toBe(0)
+    expect(output(result)).toMatchObject({ status: 'prepared', from: `claude:${sender}`, to: `claude:${recipient}`, destination: { provider: 'claude', sessionId: recipient } })
+    expect(result.stdout).not.toContain('socketPath')
+    expect(result.stdout).not.toContain(peer.CLAUDE_CODE_MESSAGING_SOCKET)
+    expect(await Bun.file(fixture.capture).exists()).toBeFalse()
+  })
+
+  test('native preparation rejects other harnesses and remote routes without trying a transport', async () => {
+    const fixture = await joinedPair()
+    const claude = { CLAUDE_CODE_SESSION_ID: third, CLAUDE_CODE_MESSAGING_SOCKET: join(fixture.home, 'claude.sock') }
+    expect((await run(fixture, claude, ['join', '--name', 'claude'])).exitCode).toBe(0)
+    for (const [identity, target] of [
+      [{ CODEX_THREAD_ID: sender }, 'claude'],
+      [claude, 'review'],
+      [{ CODEX_THREAD_ID: sender }, `remote:${replyId}/codex:${recipient}`],
+    ] as const) {
+      const result = await run(fixture, identity, ['prepare', target, 'Do not dispatch.'])
+      expect(result.exitCode).toBe(1)
+      expect(output(result)).toMatchObject({ status: 'failed', kind: 'invalid-input' })
+      expect(output(result)).not.toHaveProperty('text')
+    }
+    expect(await Bun.file(fixture.capture).exists()).toBeFalse()
+  })
+
+  test('preparation checks both current policies from the registration even after changing directory', async () => {
+    const fixture = await makeFixture()
+    const other = await makeFixture()
+    const sourcePolicy = join(fixture.home, '.undercurrent.json')
+    const targetPolicy = join(other.home, '.undercurrent.json')
+    const identity = { CODEX_THREAD_ID: sender }
+    expect((await run(fixture, identity, ['join', '--name', 'sender'])).exitCode).toBe(0)
+    expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'], { cwd: other.home })).exitCode).toBe(0)
+    await writeFile(sourcePolicy, JSON.stringify({ join: 'auto', allow: 'all' }))
+    await writeFile(targetPolicy, JSON.stringify({ join: 'auto', allow: 'all' }))
+    const prepare = () => run(fixture, identity, ['prepare', 'review', 'Check current permissions.'], { cwd: other.home })
+    expect(output(await prepare())).toMatchObject({ status: 'prepared' })
+    for (const path of [sourcePolicy, targetPolicy]) {
+      await writeFile(path, JSON.stringify({ join: 'auto', allow: [] }))
+      const denied = await prepare()
+      expect(denied.exitCode).toBe(1)
+      expect(output(denied)).toMatchObject({ status: 'failed', kind: 'not-allowed' })
+      expect(output(denied)).not.toHaveProperty('text')
+      await writeFile(path, JSON.stringify({ join: 'auto', allow: 'all' }))
+    }
+    await writeFile(targetPolicy, JSON.stringify({ join: 'off', allow: 'all' }))
+    expect((await prepare()).exitCode).toBe(1)
+    expect(await Bun.file(fixture.capture).exists()).toBeFalse()
+  })
+
+  test('preparation requires registration and valid message data, with no handoff on failure', async () => {
+    const fixture = await joinedPair()
+    const identity = { CODEX_THREAD_ID: sender }
+    for (const target of [`codex:${third}`, 'missing']) {
+      const result = await run(fixture, identity, ['prepare', target, 'No recipient.'])
+      expect(output(result)).toMatchObject({ status: 'failed', kind: 'not-found' })
+    }
+    for (const text of ['', 'has\0NUL', 'x'.repeat(32 * 1024 + 1)]) {
+      const result = await run(fixture, identity, ['prepare', 'review', '--stdin'], { stdin: text })
+      expect(result.exitCode).toBe(1)
+      expect(output(result)).toMatchObject({ status: 'failed', kind: 'invalid-input' })
+      expect(output(result)).not.toHaveProperty('text')
+    }
+    expect(await Bun.file(fixture.capture).exists()).toBeFalse()
+  })
+
   test('permission commands reject subdirectories and files without changing the allow-list', async () => {
     const fixture = await makeFixture()
     const subdirectory = join(fixture.home, 'src')
@@ -126,9 +297,11 @@ describe('CLI', () => {
   test('requires sender attachment before invoking the native command', async () => {
     const fixture = await makeFixture()
     expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
-    const result = await run(fixture, { CODEX_THREAD_ID: sender }, ['send', 'review', 'check this'])
-    expect(result.exitCode).toBe(1)
-    expect(result.stdout).toContain('attached before sending')
+    for (const command of ['send', 'prepare']) {
+      const result = await run(fixture, { CODEX_THREAD_ID: sender }, [command, 'review', 'check this'])
+      expect(result.exitCode).toBe(1)
+      expect(result.stdout).toContain('attached before sending')
+    }
     expect(await Bun.file(fixture.capture).exists()).toBeFalse()
   })
 
@@ -138,9 +311,11 @@ describe('CLI', () => {
     for (const threadId of [recipient, third]) {
       expect((await run(fixture, { CODEX_THREAD_ID: threadId }, ['join', '--name', 'review'])).exitCode).toBe(0)
     }
-    const ambiguous = await run(fixture, { CODEX_THREAD_ID: sender }, ['send', 'review', 'test'])
-    expect(ambiguous.exitCode).toBe(1)
-    expect(output(ambiguous)).toMatchObject({ status: 'failed', kind: 'ambiguous' })
+    for (const command of ['send', 'prepare']) {
+      const ambiguous = await run(fixture, { CODEX_THREAD_ID: sender }, [command, 'review', 'test'])
+      expect(ambiguous.exitCode).toBe(1)
+      expect(output(ambiguous)).toMatchObject({ status: 'failed', kind: 'ambiguous' })
+    }
     expect(await Bun.file(fixture.capture).exists()).toBeFalse()
 
     const text = 'Line one: "quoted" `code` $(do-not-run)\n東京 🐦\nLine three\n'
@@ -210,9 +385,11 @@ describe('CLI', () => {
     expect((await run(fixture, original, ['join', '--name', 'sender'])).exitCode).toBe(0)
     expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
 
-    const stale = await run(fixture, resumed, ['send', 'review', 'test'])
-    expect(stale.exitCode).toBe(1)
-    expect(stale.stdout).toContain('current inbox socket differs')
+    for (const command of ['send', 'prepare']) {
+      const stale = await run(fixture, resumed, [command, 'review', 'test'])
+      expect(stale.exitCode).toBe(1)
+      expect(stale.stdout).toContain('current inbox socket differs')
+    }
     expect(await Bun.file(fixture.capture).exists()).toBeFalse()
 
     expect((await run(fixture, resumed, ['join', '--name', 'sender'])).exitCode).toBe(0)
@@ -233,10 +410,12 @@ describe('CLI', () => {
       ['send', 'review', 'text', '--in-reply-to', 'invalid'],
       ['send', 'review'],
     ]
-    for (const args of malformed) {
-      const result = await run(fixture, { CODEX_THREAD_ID: sender }, args)
-      expect(result.exitCode).toBe(1)
-      expect(output(result)).toMatchObject({ status: 'failed', kind: 'invalid-input' })
+    for (const command of ['send', 'prepare']) {
+      for (const args of malformed) {
+        const result = await run(fixture, { CODEX_THREAD_ID: sender }, [command, ...args.slice(1)])
+        expect(result.exitCode).toBe(1)
+        expect(output(result)).toMatchObject({ status: 'failed', kind: 'invalid-input' })
+      }
     }
     const unreadable = await run(fixture, { CODEX_THREAD_ID: sender }, ['send', 'review', '--file', join(fixture.home, 'missing.txt')])
     expect(unreadable.exitCode).toBe(1)

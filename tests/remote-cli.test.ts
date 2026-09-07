@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { startRelay } from '../src/relay.ts'
@@ -75,7 +75,14 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
     expect(JSON.parse(unattachedPeers.stdout) as unknown).toMatchObject({ peers: [{ name: 'renamed', address: secondAddress, relation: 'stranger' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
 
     const text = 'λ 🦉 "quotes" \'single\' `backticks` $(not-a-command) $HOME\nsecond line — keep Unicode and punctuation'
-    const sent = await run(first, ['send', secondAddress, text], nativeId, nested)
+    const targetPath = join(second, 'peers', `codex:${nativeId}.json`)
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    await utimes(targetPath, old, old)
+    const stale = await run(first, ['send', secondAddress, text], nativeId, nested)
+    expect(stale.exitCode).toBe(1)
+    expect(JSON.parse(stale.stdout) as unknown).toMatchObject({ status: 'failed', kind: 'stale-recipient', to: secondAddress, lastSeenAt: old.toISOString() })
+    expect(await Bun.file(join(second, 'capture.json')).exists()).toBe(false)
+    const sent = await run(first, ['send', secondAddress, text, '--allow-stale'], nativeId, nested)
     expect(sent.exitCode).toBe(0)
     expect(field(sent, 'evidence')).toBe('codex-queue')
     const received = await captured(second)
@@ -91,7 +98,9 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
     expect(returned[4]).toContain(`In reply to: ${field(sent, 'messageId')}\n`)
 
     expect((await run(second, ['disallow', `contact:${contactId}`])).exitCode).toBe(0)
-    expect((await run(first, ['send', secondAddress, 'Should be refused.'], nativeId)).exitCode).toBe(1)
+    const denied = await run(first, ['send', secondAddress, 'Should be refused.', '--allow-stale'], nativeId)
+    expect(denied.exitCode).toBe(1)
+    expect(denied.stdout).not.toContain('stale-recipient')
     expect(await captured(second)).toEqual(received)
     expect((await run(second, ['allow', `contact:${contactId}`])).exitCode).toBe(0)
     expect((await run(first, ['remote', 'revoke', contactId])).exitCode).toBe(0)

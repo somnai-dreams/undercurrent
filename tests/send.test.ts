@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, spyOn, test } from 'bun:test'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
@@ -34,6 +34,21 @@ async function stopFixtureDescendant(record: string): Promise<void> {
 }
 
 describe('message boundary', () => {
+  test('creation time survives delayed rendering and replies get their own timestamp', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-07T02:00:00.000Z'))
+    try {
+      const original = createMessage(sender, 'Original.', null)
+      if (!original.ok) throw new Error(original.error.message)
+      expect(original.value.createdAt).toBe('2026-09-07T02:00:00.000Z')
+      clock.mockReturnValue(Date.parse('2026-09-07T02:05:00.000Z'))
+      expect(envelope(original.value)).toContain('Created at: 2026-09-07T02:00:00.000Z')
+      const reply = createMessage(sender, 'Reply.', original.value.id)
+      if (!reply.ok) throw new Error(reply.error.message)
+      expect(reply.value.createdAt).toBe('2026-09-07T02:05:00.000Z')
+      expect(envelope(reply.value)).toContain(`In reply to: ${original.value.id}`)
+    } finally { clock.mockRestore() }
+  })
+
   test('rejects empty text, NULs, oversized UTF-8, and malformed reply IDs', () => {
     for (const text of ['', ' \n ', 'a\0b', '🦉'.repeat(8193)]) {
       expect(createMessage(sender, text, null).ok).toBe(false)

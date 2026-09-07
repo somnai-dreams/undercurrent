@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, utimes, writeF
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Registration, Result } from '../src/data.ts'
-import { joinPeer, leavePeer, listPeers, listRegistrations, readPeer, recentWindowMs, refreshPeer, registrationLifetimeMs, resolvePeer } from '../src/registry.ts'
+import { checkRecipient, joinPeer, leavePeer, listPeers, listRegistrations, readPeer, recentWindowMs, refreshPeer, registrationLifetimeMs, resolvePeer } from '../src/registry.ts'
 import { runHook } from '../src/hooks.ts'
 
 const roots: string[] = []
@@ -34,6 +34,18 @@ test('discovery expires at the boundary without deleting contacts or silently re
   expect(await readFile(path, 'utf8')).toBe(before)
   unwrap(await joinPeer(home, { ...registration, destination: { provider: 'codex', threadId: crypto.randomUUID() } }))
   expect((await resolvePeer(home, 'old-worker')).ok).toBe(false)
+})
+
+test('recipient checks use the discovery boundary, report future clocks, and never refresh activity', async () => {
+  const { home, path } = await fixture()
+  const peer = unwrap(await readPeer(home, address))
+  const seen = peer.lastSeenAt
+  expect(checkRecipient(peer, false, seen + recentWindowMs)).toBeNull()
+  expect(checkRecipient(peer, false, seen + recentWindowMs + 1)).toMatchObject({ status: 'failed', kind: 'stale-recipient', lastSeenAt: new Date(seen).toISOString() })
+  expect(checkRecipient(peer, false, seen - 1)?.error).toContain('in the future')
+  expect(checkRecipient(peer, true, seen + recentWindowMs + 1)).toBeNull()
+  expect(unwrap(await readPeer(home, address)).lastSeenAt).toBe(seen)
+  expect(await Bun.file(path).exists()).toBe(true)
 })
 
 test('activity hooks refresh only an existing identity without rewriting context or reviving leave', async () => {

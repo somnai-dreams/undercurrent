@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path'
 import { currentDestination, discoveryProject } from './current.ts'
 import { addressOf, formatAddress } from './data.ts'
 import type { Failure, Provider, Registration, Result } from './data.ts'
-import { joinPeer, leavePeer, listPeers, peerListNotice, recentWindowMs, resolvePeer } from './registry.ts'
+import { checkRecipient, joinPeer, leavePeer, listPeers, peerListNotice, recentWindowMs, resolvePeer } from './registry.ts'
+import type { StaleRecipient } from './registry.ts'
 import { createMessage, envelope, sendMessage } from './send.ts'
 import type { SendOutcome } from './send.ts'
 import { runRelayCommand, runRemoteCommand } from './remote-cli.ts'
@@ -36,7 +37,7 @@ type Command =
   | { kind: 'peers'; all: boolean }
   | { kind: 'leave' }
   | { kind: 'remote' | 'relay'; args: string[] }
-  | { kind: 'send' | 'prepare'; target: string; source: TextSource; inReplyTo: string | null }
+  | { kind: 'send' | 'prepare'; target: string; source: TextSource; inReplyTo: string | null; allowStale: boolean }
 
 const help = `Undercurrent — messages between existing agent conversations.
 
@@ -88,7 +89,9 @@ is auto + self; existing settings are preserved. self includes linked worktrees
 of the same Git repository; each checkout's policy still applies. Prompt,
 tool-completion and stop hooks refresh existing registrations. Registry reads
 delete registrations after three days without activity; rejoin to return.
-Until then, older peers remain directly addressable.
+send and prepare refuse recipients last seen over 30 minutes ago. Check the
+recipient, then use its exact address with --allow-stale for an intentional send.
+This overrides freshness only, not permissions or three-day expiry.
 Codex hooks need native review.
 
 Results are JSON. Exit 0 means success, 1 means failed, and 2 means uncertain.
@@ -232,14 +235,14 @@ async function main(args: string[]): Promise<number> {
       if (!text.ok) return fail(text)
       const message = createMessage(address, text.value, command.value.inReplyTo)
       if (!message.ok) return fail(message)
-      let outcome: SendOutcome
+      let outcome: SendOutcome | StaleRecipient
       let to: string
       if (command.value.target.startsWith('remote:')) {
         if (command.value.kind === 'prepare') return fail(invalidInput('Native handoffs support local peers in your current harness. Use uc send for remote destinations.'))
         const recipient = parseRemoteAddress(command.value.target)
         if (!recipient.ok) return fail(recipient)
         to = formatRemoteAddress(recipient.value)
-        outcome = await sendRemote(home, recipient.value, message.value)
+        outcome = await sendRemote(home, recipient.value, message.value, command.value.allowStale)
       } else {
         const recipient = await resolvePeer(home, command.value.target)
         if (!recipient.ok) return fail(recipient)
@@ -247,6 +250,11 @@ async function main(args: string[]): Promise<number> {
         if (!permitted.ok) return fail(permitted)
         const destination = addressOf(recipient.value.destination)
         to = formatAddress(destination)
+        const stale = checkRecipient(recipient.value, command.value.allowStale)
+        if (stale !== null) {
+          console.log(JSON.stringify({ ...stale, to }))
+          return 1
+        }
         if (command.value.kind === 'prepare') {
           if (destination.provider !== current.value.provider) return fail(invalidInput('Native handoffs support local peers in your current harness. Use uc send across harnesses.'))
           console.log(JSON.stringify({ status: 'prepared', messageId: message.value.id, createdAt: message.value.createdAt, from: formatAddress(address), to, destination, text: envelope(message.value) }))
@@ -344,11 +352,16 @@ function parseSend(kind: 'send' | 'prepare', args: string[]): Result<Command> {
   let target: string | null = null
   let source: TextSource | null = null
   let inReplyTo: string | null = null
+  let allowStale = false
   let positionalOnly = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!
     if (!positionalOnly && arg.startsWith('-')) {
       switch (arg) {
+        case '--allow-stale':
+          if (allowStale) return invalidInput('Supply --allow-stale only once.')
+          allowStale = true
+          continue
         case '--':
           positionalOnly = true
           continue
@@ -388,7 +401,8 @@ function parseSend(kind: 'send' | 'prepare', args: string[]): Result<Command> {
     }
   }
   if (target === null || target === '') return invalidInput(`Usage: uc ${kind} <label|address> ["message" | --file <path> | --stdin].`)
-  return { ok: true, value: { kind, target, source: source ?? { kind: 'stdin' }, inReplyTo } }
+  if (allowStale && !target.includes(':')) return invalidInput('--allow-stale requires an exact recipient address. Check uc peers --all.')
+  return { ok: true, value: { kind, target, source: source ?? { kind: 'stdin' }, inReplyTo, allowStale } }
 }
 
 async function readText(source: TextSource): Promise<Result<string>> {

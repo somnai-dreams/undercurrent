@@ -69,7 +69,7 @@ The address is derived from provider and native conversation ID: `CODEX_THREAD_I
 
 Per-session files avoid unrelated agents rewriting one shared registry. Validate a registration at the read boundary; publish updates atomically. Sender identity comes from the current session's registration, not a caller-supplied display name. If current-session detection is missing or ambiguous, fail with a concrete explanation rather than guessing. A provider-specific join helper can supply identity where the host does not expose it as an ordinary environment variable.
 
-`peers` means registered peers, not verified live agents. Stale registrations are allowed; sending attempts the registered native destination and reports the evidence available from that adapter. `leave` removes only the caller's registration. No heartbeat or background cleanup process is needed for this contract.
+`peers` means registered peers, not verified live agents. Sending and native preparation refuse recipients outside the 30-minute activity window with last-seen context before native handoff. An intentional older recipient needs its exact address and `--allow-stale`; permissions and three-day expiry still apply. `leave` removes only the caller's registration. No heartbeat or background cleanup process is needed for this contract. The recipient's native queue may retain previously submitted messages; these checks neither recall nor expire them.
 
 A transient message needs four fields:
 

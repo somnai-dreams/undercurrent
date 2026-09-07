@@ -2,9 +2,17 @@
 
 This records observed behavior, including incomplete live checks.
 
+## Sender feedback for stale recipients — 7 September 2026
+
+`uc send` and `uc prepare` now refuse recipients outside the existing 30-minute discovery window before native handoff. The failure includes `kind: stale-recipient`, the exact destination, `lastSeenAt`, and guidance to reconsider the recipient. A future activity timestamp also fails visibly. `--allow-stale` requires an exact address, and cannot bypass project permissions, attachment or three-day expiry. Replies get the same check. The remote bridge evaluates activity after permissions using its own registration and clock; its feedback and the explicit override pass through the relay. No registration format, settings or installed integrations changed.
+
+Types, lint and all 100 tests pass (1,060 assertions, 10.01 seconds). Local CLI fixtures verify no native invocation or prepared envelope on refusal, exact-address override, reply handling, and permissions/expiry under override. Boundary fixtures cover precisely 30 minutes, future clocks and unchanged activity metadata. The remote CLI and bridge fixtures prove that no native process or socket is used on refusal, that feedback reaches the sender, and that intentional older-recipient delivery preserves its message. Remote parsing rejects malformed override and feedback fields. The final affected-suite rerun passes 52 tests (670 assertions). The agent skill passes its validator, limits routine progress broadcasts and leaves recipient selection with the sending agent.
+
+This prevents new sends to stale recipients by default; it neither removes existing native queue entries nor implements the proposed one-pending-message limit. No live peer was contacted and no native queue was edited for this slice. Relay and bridges must be upgraded together for the new delivery fields.
+
 ## Native handoff dogfood and message timestamps — 7 September 2026
 
-The native handoff branch now includes main's discovery and retention changes. Preparation accepts older contacts still inside the three-day retention period; expired senders or recipients fail without dispatch, and rejoining restores preparation. Every message receives one canonical UTC `createdAt` value when created. The rendered envelope, prepared/send JSON, and remote transport preserve it. It is the sender's clock reading, not a delivery receipt or a cross-machine ordering guarantee. The current remote wire format requires upgrading the relay and both bridges together; persisted identities and pairings are unchanged.
+The native handoff branch includes main's discovery and retention changes. At this snapshot preparation accepted older contacts inside the three-day retention period; the sender-feedback slice above subsequently added the explicit freshness check. Expired senders or recipients fail without dispatch, and rejoining restores preparation. Every message receives one canonical UTC `createdAt` value when created. The rendered envelope, prepared/send JSON, and remote transport preserve it. It is the sender's clock reading, not a delivery receipt or a cross-machine ordering guarantee. The current remote wire format requires upgrading the relay and both bridges together; persisted identities and pairings are unchanged.
 
 Types, lint and all 98 tests pass (1,001 assertions, 10.46 seconds), with permission to open the suite's temporary sockets and loopback listeners. Coverage includes preparation after discovery/retention expiry, delayed rendering, distinct reply creation times, malformed remote timestamps, and timestamp preservation through remote delivery. The agent skill validator and `git diff --check` pass.
 

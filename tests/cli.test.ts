@@ -20,7 +20,40 @@ afterEach(async () => {
 })
 
 describe('CLI', () => {
-  test('native preparation accepts older contacts but rejects expired recipients and senders without dispatch', async () => {
+  test('send and prepare return stale recipient context without dispatch, with an exact-address override', async () => {
+    const fixture = await joinedPair()
+    const identity = { CODEX_THREAD_ID: sender }
+    const path = join(fixture.home, 'peers', `codex:${recipient}.json`)
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    await utimes(path, old, old)
+    const before = await readFile(path, 'utf8')
+    for (const command of ['send', 'prepare']) {
+      for (const target of ['review', `codex:${recipient}`]) {
+        const rejected = await run(fixture, identity, [command, target, 'Check the recipient.', '--in-reply-to', replyId])
+        expect(rejected.exitCode).toBe(1)
+        expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'stale-recipient', to: `codex:${recipient}`, lastSeenAt: old.toISOString() })
+        expect(rejected.stdout).toContain('2 days ago')
+        expect(output(rejected)).not.toHaveProperty('text')
+        expect(await Bun.file(fixture.capture).exists()).toBe(false)
+      }
+      expect(output(await run(fixture, identity, [command, 'review', 'Wrong override target.', '--allow-stale']))).toMatchObject({ kind: 'invalid-input' })
+      expect(output(await run(fixture, identity, [command, `codex:${recipient}`, 'Duplicate flag.', '--allow-stale', '--allow-stale']))).toMatchObject({ kind: 'invalid-input' })
+    }
+    expect(output(await run(fixture, identity, ['prepare', `codex:${recipient}`, 'Intentional preparation.', '--allow-stale']))).toMatchObject({ status: 'prepared' })
+    expect(await Bun.file(fixture.capture).exists()).toBe(false)
+    expect(output(await run(fixture, identity, ['send', `codex:${recipient}`, 'Intentional send.', '--allow-stale']))).toMatchObject({ status: 'submitted' })
+    expect(await readFile(path, 'utf8')).toBe(before)
+    await rm(fixture.capture)
+    await writeFile(join(fixture.home, '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
+    for (const command of ['send', 'prepare']) {
+      const denied = await run(fixture, identity, [command, `codex:${recipient}`, 'Override is not permission.', '--allow-stale'])
+      expect(output(denied)).toMatchObject({ status: 'failed', kind: 'not-allowed' })
+      expect(output(denied)).not.toHaveProperty('lastSeenAt')
+    }
+    expect(await Bun.file(fixture.capture).exists()).toBe(false)
+  })
+
+  test('native preparation allows explicitly selected older contacts but rejects expired recipients and senders', async () => {
     const fixture = await joinedPair()
     const identity = { CODEX_THREAD_ID: sender }
     const senderPath = join(fixture.home, 'peers', `codex:${sender}.json`)
@@ -29,13 +62,13 @@ describe('CLI', () => {
     const expired = new Date(Date.now() - registrationLifetimeMs - 60_000)
     await utimes(recipientPath, old, old)
     const before = await readFile(recipientPath, 'utf8')
-    expect(output(await run(fixture, identity, ['prepare', 'review', 'Older contact.']))).toMatchObject({ status: 'prepared', to: `codex:${recipient}` })
+    expect(output(await run(fixture, identity, ['prepare', `codex:${recipient}`, 'Older contact.', '--allow-stale']))).toMatchObject({ status: 'prepared', to: `codex:${recipient}` })
     expect(await readFile(recipientPath, 'utf8')).toBe(before)
 
     for (const target of ['review', `codex:${recipient}`]) {
       expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
       await utimes(recipientPath, expired, expired)
-      const rejected = await run(fixture, identity, ['prepare', target, 'Expired contact.'])
+      const rejected = await run(fixture, identity, ['prepare', target, 'Expired contact.', ...(target.includes(':') ? ['--allow-stale'] : [])])
       expect(rejected.exitCode).toBe(1)
       expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'not-found' })
       expect(output(rejected)).not.toHaveProperty('text')

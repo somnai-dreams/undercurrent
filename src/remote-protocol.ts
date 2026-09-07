@@ -1,6 +1,7 @@
 import { formatAddress, parseAddress, parseNativeAddress } from './data.ts'
 import type { Address, Failure, Result } from './data.ts'
 import type { Message, SendOutcome } from './send.ts'
+import type { StaleRecipient } from './registry.ts'
 import { hasKeys, isIsoTimestamp, isObject, isToken, isUuid } from './validation.ts'
 
 export type RemoteIdentity = { origin: string; machineId: string; ownerToken: string }
@@ -8,10 +9,10 @@ export type RemoteContact = { id: string }
 export type RemoteAddress = { provider: 'remote'; contactId: string; peer: Address }
 export type RemoteMessage = Omit<Message, 'from'> & { from: Address }
 export type Delivery =
-  | { type: 'send'; requestId: string; contactId: string; to: Address; message: RemoteMessage }
+  | { type: 'send'; requestId: string; contactId: string; to: Address; message: RemoteMessage; allowStale: boolean }
   | { type: 'peers'; requestId: string; contactId: string; all: boolean }
 export type RemotePeer = { name: string; address: Address; allowed: boolean; lastSeenAt: number }
-export type RemoteResult = SendOutcome | { status: 'peers'; peers: RemotePeer[] }
+export type RemoteResult = SendOutcome | StaleRecipient | { status: 'peers'; peers: RemotePeer[] }
 export type Receipt = { type: 'receipt'; requestId: string; result: RemoteResult }
 export type Invitation = { origin: string; code: string }
 
@@ -109,14 +110,14 @@ export function parseDelivery(raw: unknown): Result<Delivery> {
       return { ok: true, value: { type: 'peers', requestId: requestId.toLowerCase(), contactId: contactId.toLowerCase(), all: raw['all'] } }
     }
     case 'send': {
-      if (!hasKeys(raw, ['type', 'requestId', 'contactId', 'to', 'message'])) {
-        return invalid('A send request must contain exactly type, requestId, contactId, to, and message.')
+      if (!hasKeys(raw, ['type', 'requestId', 'contactId', 'to', 'message', 'allowStale']) || typeof raw['allowStale'] !== 'boolean') {
+        return invalid('A send request must contain exactly type, requestId, contactId, to, message, and allowStale boolean.')
       }
       const to = parseNativeAddress(raw['to'])
       if (!to.ok) return to
       const message = parseRemoteMessage(raw['message'])
       if (!message.ok) return message
-      return { ok: true, value: { type: 'send', requestId: requestId.toLowerCase(), contactId: contactId.toLowerCase(), to: to.value, message: message.value } }
+      return { ok: true, value: { type: 'send', requestId: requestId.toLowerCase(), contactId: contactId.toLowerCase(), to: to.value, message: message.value, allowStale: raw['allowStale'] } }
     }
     default: return invalid('A relay delivery type must be send or peers.')
   }
@@ -134,10 +135,14 @@ export function parseRemoteResult(raw: unknown): Result<RemoteResult> {
     case 'failed':
     case 'uncertain': {
       const error = raw['error']
-      if (!hasKeys(raw, ['status', 'error']) || typeof error !== 'string' || error.trim() === ''
+      if (typeof error !== 'string' || error.trim() === ''
         || error.includes('\0') || Buffer.byteLength(error, 'utf8') > 16 * 1024) {
-        return invalid('An unsuccessful result needs exactly status and nonempty error text of at most 16 KiB without NUL characters.')
+        return invalid('An unsuccessful result needs nonempty error text of at most 16 KiB without NUL characters.')
       }
+      if (raw['status'] === 'failed' && hasKeys(raw, ['status', 'kind', 'error', 'lastSeenAt']) && raw['kind'] === 'stale-recipient' && isIsoTimestamp(raw['lastSeenAt'])) {
+        return { ok: true, value: { status: 'failed', kind: 'stale-recipient', error, lastSeenAt: raw['lastSeenAt'] } }
+      }
+      if (!hasKeys(raw, ['status', 'error'])) return invalid('Invalid unsuccessful result fields.')
       return { ok: true, value: { status: raw['status'], error } }
     }
     case 'peers': {

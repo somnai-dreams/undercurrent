@@ -11,6 +11,7 @@ export type MessageOrigin = Address | RemoteAddress
 
 export type Message = {
   id: string
+  createdAt: string
   from: MessageOrigin
   inReplyTo: string | null
   text: string
@@ -35,13 +36,14 @@ export function createMessage(from: MessageOrigin, text: string, inReplyTo: stri
   if (inReplyTo !== null && !isUuid(inReplyTo)) {
     return invalidMessage('--in-reply-to must be a message UUID.')
   }
-  return { ok: true, value: { id: crypto.randomUUID(), from, text, inReplyTo: inReplyTo?.toLowerCase() ?? null } }
+  return { ok: true, value: { id: crypto.randomUUID(), createdAt: new Date(Date.now()).toISOString(), from, text, inReplyTo: inReplyTo?.toLowerCase() ?? null } }
 }
 
 export function envelope(message: Message): string {
   return [
     'Undercurrent peer message',
     `Message ID: ${message.id}`,
+    `Created at: ${message.createdAt}`,
     `From: ${formatOrigin(message.from)}`,
     ...(message.inReplyTo === null ? [] : [`In reply to: ${message.inReplyTo}`]),
     'Reply when useful with uc send or uc prepare to the From address and --in-reply-to this Message ID.',

@@ -7,8 +7,9 @@ See [README](README.md) to install and try it, or [REMOTE](REMOTE.md) to connect
 | Command | Purpose |
 | --- | --- |
 | `uc config` | Show the current directory's effective project policy. |
-| `uc peers` | List registered conversations, addresses, and permission relationships. |
-| `uc join --name builder --about "Working on search"` | Attach this conversation or update its description and native destination. |
+| `uc peers` | List conversations seen within 30 minutes, addresses, and permission relationships. |
+| `uc peers --all` | Include contacts seen within the last three days. |
+| `uc join --name builder --about "Can explain search architecture"` | Attach this conversation or update its description and native destination. |
 | `uc send reviewer --file findings.txt` | Send a message to a unique label or exact address. |
 | `uc send reviewer --stdin` | Read message text from stdin. |
 | `uc prepare reviewer --file findings.txt` | Check permissions and prepare text for a native messaging tool; send nothing. |
@@ -39,7 +40,7 @@ uc prepare 'codex:<thread UUID>' --file findings.txt --in-reply-to '<Message ID>
 
 Preparation accepts the same inputs as send and applies the same registration, sender-socket freshness, message-validation, and project-permission checks. It returns `status: "prepared"`, the message ID, From/To addresses, a native `destination`, and complete envelope `text`. Exit 0 means preparation succeeded. It opens no delivery connection, stores no message, and includes no delivery evidence or socket path.
 
-The agent matches the destination to an available native tool and passes the complete text through its structured message argument. The [skill](skills/undercurrent/SKILL.md) covers identity matching and result handling. Preparation is a current policy snapshot, not a persistent permission grant; prepare again after a delay or target change. Native controls still apply, and Undercurrent cannot enforce subsequent policy changes inside another tool.
+The agent matches the destination to an available native tool and passes the complete text through its structured message argument. The [skill](skills/undercurrent/SKILL.md) covers identity matching and result handling. Preparation is a current policy snapshot, not a persistent permission grant; prepare again after a delay or target change. Recipients outside the 30-minute discovery window need an exact address and `--allow-stale`; either conversation's three-day registration expiry requires rejoining. Native controls still apply, and Undercurrent cannot enforce subsequent policy changes inside another tool.
 
 Use `uc send` when no exact native route is available, and for cross-harness or remote destinations. Choose the route before attempting delivery. A native hold, refusal, failure, or uncertain result must not trigger an automatic retry through another route.
 
@@ -93,7 +94,15 @@ Commands return JSON. A send reports the message ID, addresses, and available na
 
 An actual reply confirms the agent received the message. Claude's socket provides no admission receipt, and native controls can hold or refuse incoming text. Codex failures include native diagnostics when available.
 
-Idle conversations remain registered. Session-end hooks remove registrations; a later automatic startup/resume rejoins and refreshes Claude's socket. Crashes or skipped hooks can leave stale entries. There is no idle timer, heartbeat, offline mailbox, or guaranteed message ordering.
+`send` and `prepare` check recipient activity after permissions, before native handoff. Outside the 30-minute window they return `status: "failed"`, `kind: "stale-recipient"`, `to`, `lastSeenAt`, and an explanation; no native submission occurs. Check recent peers and the task context. An intentional send to an older conversation uses `uc send '<exact address>' --file message.txt --allow-stale` (or `prepare`). The flag requires an exact address and does not bypass permissions, attachment, or three-day expiry. Replies use the same check. Missing hooks or a future activity timestamp can also trigger refusal. This is a sender decision, not a request for new user approval.
+
+Every message includes `Created at`, an ISO timestamp in UTC (the trailing `Z`). The sender records it once when sending or preparing a message; native handoffs and the remote relay preserve it. Send/preparation JSON also includes `createdAt`. Replies get their own timestamp and refer to the earlier message by ID. Creation time comes from the sender's clock; it is not a delivery receipt or a guarantee of ordering between machines.
+
+`uc peers` shows conversations seen within 30 minutes; `--all` includes contacts seen within three days. Registry reads delete registrations after three days without activity, including when resolving an exact address. Cleanup happens on use, with no scheduled job. Remote discovery and delivery apply the same expiry on the receiving machine. `lastSeenAt` is the registration file's modification time: joining writes it, and `UserPromptSubmit`, `PostToolUse` and `Stop` hooks update it without rewriting the registration.
+
+Recently seen does not mean currently working. Names and descriptions are self-reported context, never ownership of files or tasks. Do not defer work on their authority; use fresh evidence to resolve an actual editing conflict. Descriptions can outlive the work they mention.
+
+Older conversations can be resolved until three-day expiry, but sending needs the explicit freshness override above. Only the registration is removed at expiry; native conversations, project policies and remote pairings are unaffected. Activity hooks refresh existing registrations without recreating expired or explicitly removed entries. Session-end hooks remove registrations; automatic startup/resume rejoins and refreshes Claude's socket. Manual sessions use `uc join` to return. Missing hooks, crashes, or long periods without hook events make conversations age out. Run setup again to install the activity hooks, review them in Codex, and rejoin from existing sessions if needed. There is no heartbeat daemon or Undercurrent mailbox. Codex's native queue can retain submitted messages until a task resumes; neither registration expiry nor these checks recalls them. There is no pending-message limit or message-expiry guarantee.
 
 ## If something does not work
 
@@ -106,6 +115,7 @@ Idle conversations remain registered. Session-end hooks remove registrations; a 
 | A conversation is a stranger | Check both projects' policies and exact checkout paths. Have the owner decide whether to grant access. |
 | A send is submitted but no reply appears | Check the recipient and let the active Codex turn finish. Submitted does not mean read; ordinary final text is not forwarded. |
 | A send is uncertain | Inspect the recipient before deciding on a follow-up; do not blindly resend. |
+| “Registration is busy” | Updates briefly lock one registration. If an interrupted command left the named lock file, remove it only after confirming no command is using that peer. |
 
 Listings use the joined conversation's registered project even after changing directories; `uc config` describes the current directory. An explicit rejoin changes the registered project. A custom `UNDERCURRENT_HOME` must be the same for setup, hooks, and ordinary commands. `UNDERCURRENT_CODEX_BIN` can select a different Codex executable.
 

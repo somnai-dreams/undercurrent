@@ -1,14 +1,15 @@
 import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { addressOf, formatAddress, parseNativeAddress } from './data.ts'
-import type { Address, Failure, Registration, Result } from './data.ts'
-import { listPeers, resolvePeer } from './registry.ts'
+import type { Failure, Registration, Result } from './data.ts'
+import { checkRecipient, listPeers, resolvePeer } from './registry.ts'
+import type { StaleRecipient } from './registry.ts'
 import { hasPermission, readProject } from './project.ts'
 import {
   decodeInvitation, encodeInvitation, maxFrameBytes, parseContacts, parseDelivery,
   parseIdentity, parseRemoteId, parseRemoteResult, validateOrigin,
 } from './remote-protocol.ts'
-import type { Delivery, RemoteAddress, RemoteContact, RemoteIdentity, RemoteResult } from './remote-protocol.ts'
+import type { Delivery, RemoteAddress, RemoteContact, RemoteIdentity, RemotePeer, RemoteResult } from './remote-protocol.ts'
 import { sendMessage } from './send.ts'
 import type { Message, SendOptions, SendOutcome } from './send.ts'
 import { remoteRequestTimeoutMs } from './delivery-limits.ts'
@@ -21,7 +22,6 @@ export type Bridge = {
 }
 export type BridgeState = 'connecting' | 'connected' | 'reconnecting' | 'stopped'
 
-type RemotePeer = { name: string; address: Address; allowed: boolean }
 type HttpResult =
   | { ok: true; status: number; value: unknown }
   | { ok: false; status: 'failed' | 'uncertain'; error: string }
@@ -93,12 +93,12 @@ export async function revokeContact(home: string, contactId: string): Promise<Re
   return { ok: true, value: undefined }
 }
 
-export async function remotePeers(home: string, contactId: string): Promise<Result<RemotePeer[]>> {
+export async function remotePeers(home: string, contactId: string, all = false): Promise<Result<RemotePeer[]>> {
   const id = parseRemoteId(contactId)
   if (!id.ok) return id
   const identity = await loadRemoteIdentity(home)
   if (!identity.ok) return identity
-  const response = await requestJson(identity.value.origin, '/peers', 'POST', identity.value.ownerToken, undefined, { 'x-contact': id.value })
+  const response = await requestJson(identity.value.origin, '/peers', 'POST', identity.value.ownerToken, undefined, { 'x-contact': id.value, 'x-peer-view': all ? 'all' : 'recent' })
   if (!response.ok) return fail(response.error)
   const result = parseRemoteResult(response.value)
   if (!result.ok) return fail('Relay returned an invalid discovery result.')
@@ -110,7 +110,7 @@ export async function remotePeers(home: string, contactId: string): Promise<Resu
   }
 }
 
-export async function sendRemote(home: string, to: RemoteAddress, message: Message): Promise<SendOutcome> {
+export async function sendRemote(home: string, to: RemoteAddress, message: Message, allowStale = false): Promise<SendOutcome | StaleRecipient> {
   if (message.from.provider === 'remote') return { status: 'failed', error: 'Remote messages cannot be forwarded as another contact. Send from the current local conversation.' }
   const target = parseNativeAddress(to.peer)
   if (!target.ok) return { status: 'failed', error: target.error.message }
@@ -128,7 +128,9 @@ export async function sendRemote(home: string, to: RemoteAddress, message: Messa
     'x-from': formatAddress(message.from),
     'x-to': formatAddress(target.value),
     'x-request': message.id,
+    'x-created-at': message.createdAt,
     'x-contact': contactId.value,
+    'x-allow-stale': String(allowStale),
   }
   if (message.inReplyTo !== null) headers['x-in-reply-to'] = message.inReplyTo
   const response = await requestJson(identity.value.origin, '/send', 'POST', identity.value.ownerToken, message.text, headers)
@@ -244,14 +246,14 @@ export async function startBridge(home: string, options: SendOptions = {}, onSta
 async function handleDelivery(home: string, delivery: Delivery, options: SendOptions): Promise<RemoteResult> {
   switch (delivery.type) {
     case 'peers': {
-      const peers = await listPeers(home)
+      const peers = await listPeers(home, delivery.all)
       if (!peers.ok) return { status: 'failed', error: peers.error.message }
       const visible: RemotePeer[] = []
       for (const peer of peers.value) {
         const address = addressOf(peer.destination)
         const shared = await projectShares(home, peer, delivery.contactId)
         if (!shared.ok) return { status: 'failed', error: shared.error.message }
-        visible.push({ name: peer.name, address, allowed: shared.value })
+        visible.push({ name: peer.name, address, allowed: shared.value, lastSeenAt: peer.lastSeenAt })
       }
       const result = parseRemoteResult({ status: 'peers', peers: visible })
       return result.ok ? result.value : { status: 'failed', error: 'Shared peer names or count exceed the remote discovery limits.' }
@@ -262,6 +264,8 @@ async function handleDelivery(home: string, delivery: Delivery, options: SendOpt
       const shared = await projectShares(home, peer.value, delivery.contactId)
       if (!shared.ok) return { status: 'failed', error: shared.error.message }
       if (!shared.value) return { status: 'failed', error: `This project does not allow your contact. Its owner can run uc allow contact:${delivery.contactId}.` }
+      const stale = checkRecipient(peer.value, delivery.allowStale)
+      if (stale !== null) return stale
       return sendMessage(peer.value.destination, {
         ...delivery.message,
         from: { provider: 'remote', contactId: delivery.contactId, peer: delivery.message.from },

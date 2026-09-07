@@ -181,6 +181,8 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
           const to = parseAddress(request.headers.get('x-to') ?? '')
           if (!from.ok) return failure(from.error.message, 400)
           if (!to.ok) return failure(to.error.message, 400)
+          const allowStale = request.headers.get('x-allow-stale') ?? 'false'
+          if (allowStale !== 'true' && allowStale !== 'false') return failure('x-allow-stale must be true or false.', 400)
           let text: string
           try { text = await request.text() } catch { return failure('Cannot read message text.', 400) }
           // Recheck the committed pairing after body I/O, immediately before dispatch.
@@ -188,7 +190,8 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
           if (contact instanceof Response) return contact
           const delivery = parseDelivery({
             type: 'send', requestId: crypto.randomUUID(), contactId: contact.id, to: to.value,
-            message: { id: request.headers.get('x-request'), from: from.value, text, inReplyTo: request.headers.get('x-in-reply-to') },
+            allowStale: allowStale === 'true',
+            message: { id: request.headers.get('x-request'), createdAt: request.headers.get('x-created-at'), from: from.value, text, inReplyTo: request.headers.get('x-in-reply-to') },
           })
           if (!delivery.ok) return failure(delivery.error.message, 400)
           return dispatch(contact.to, delivery.value)
@@ -196,7 +199,9 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
         case 'POST /peers': {
           const contact = route(request)
           if (contact instanceof Response) return contact
-          return dispatch(contact.to, { type: 'peers', requestId: crypto.randomUUID(), contactId: contact.id })
+          const view = request.headers.get('x-peer-view') ?? 'recent'
+          if (view !== 'recent' && view !== 'all') return failure('x-peer-view must be recent or all.', 400)
+          return dispatch(contact.to, { type: 'peers', requestId: crypto.randomUUID(), contactId: contact.id, all: view === 'all' })
         }
         default: return failure('Unknown relay endpoint.', 404)
       }

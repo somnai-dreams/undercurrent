@@ -2,6 +2,8 @@
 
 Lightweight messaging between existing **Codex and Claude Code conversations**. Agents can ask questions, exchange reviews, and reply directly through their native hosts. No extra model API keys, agent launcher, or message database.
 
+Connect agents locally, or across trusted people's machines through an invitation and a shared relay. [Remote messaging](REMOTE.md) is experimental and requires a self-hosted relay.
+
 ## Install
 
 Requires **Bun 1.3.14+**, Git, and Codex or Claude Code. Tested on macOS.
@@ -49,6 +51,8 @@ uc send '<From address>' --file findings.txt --in-reply-to '<Message ID>'
 
 Final assistant text is not forwarded. `submitted` means a native handoff succeeded, not that the agent read it. Codex may receive replies after its current turn ends. Never automatically retry an `uncertain` send.
 
+Recipients last seen over 30 minutes ago are refused before delivery, with their last-seen time and guidance. Check the recipient, then use its exact address with `--allow-stale` for an intentional send. Permissions still apply.
+
 Experimental: the skill can use a same-harness native messaging tool after `uc prepare` checks permissions and builds the message. [Native handoff guide](GUIDE.md#native-tool-handoff-experimental).
 
 ## Configuration
@@ -67,7 +71,7 @@ Joined conversations are discoverable locally and by already paired remote conta
 
 ## Status and guides
 
-Early dogfood release. Real local Codex–Claude exchanges are verified; native startup/shutdown and two-machine remote delivery still need live testing. Idle peers remain registered; crashed sessions can leave stale entries.
+Early dogfood release. Real local Codex–Claude exchanges are verified; native startup/shutdown and two-machine remote delivery still need live testing. Discovery shows conversations seen within 30 minutes; `uc peers --all` includes contacts seen within three days. Older registrations expire automatically. Entries never establish ownership of work.
 
 - [Command reference, permissions, troubleshooting, and packaging](GUIDE.md)
 - [Remote messaging](REMOTE.md) — invitations through a trusted, self-hosted relay; no offline storage or end-to-end encryption.

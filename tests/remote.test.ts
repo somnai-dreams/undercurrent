@@ -117,6 +117,7 @@ describe('remote enrollment and project sharing', () => {
     const firstFrame = await first.received
     expect(firstFrame).toContain(`remote:${pair.contactId}/codex:`)
     expect(firstFrame).toContain(JSON.stringify(message.text).slice(1, -1))
+    expect(firstFrame).toContain(`Created at: ${message.createdAt}`)
     expect(firstFrame).not.toContain(pair.a.ownerToken)
     expect(firstFrame).not.toContain(pair.b.ownerToken)
     unwrap(await joinPeer(pair.bHome, { name: 'receiver', destination: { provider: 'claude', sessionId: targetId, socketPath: second.path } }))

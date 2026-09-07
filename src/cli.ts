@@ -249,7 +249,7 @@ async function main(args: string[]): Promise<number> {
         to = formatAddress(destination)
         if (command.value.kind === 'prepare') {
           if (destination.provider !== current.value.provider) return fail(invalidInput('Native handoffs support local peers in your current harness. Use uc send across harnesses.'))
-          console.log(JSON.stringify({ status: 'prepared', messageId: message.value.id, from: formatAddress(address), to, destination, text: envelope(message.value) }))
+          console.log(JSON.stringify({ status: 'prepared', messageId: message.value.id, createdAt: message.value.createdAt, from: formatAddress(address), to, destination, text: envelope(message.value) }))
           return 0
         }
         const codexBin = process.env['UNDERCURRENT_CODEX_BIN']
@@ -261,6 +261,7 @@ async function main(args: string[]): Promise<number> {
       console.log(JSON.stringify({
         ...outcome,
         messageId: message.value.id,
+        createdAt: message.value.createdAt,
         from: formatAddress(address),
         to,
       }))

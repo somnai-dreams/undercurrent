@@ -188,7 +188,7 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
           if (contact instanceof Response) return contact
           const delivery = parseDelivery({
             type: 'send', requestId: crypto.randomUUID(), contactId: contact.id, to: to.value,
-            message: { id: request.headers.get('x-request'), from: from.value, text, inReplyTo: request.headers.get('x-in-reply-to') },
+            message: { id: request.headers.get('x-request'), createdAt: request.headers.get('x-created-at'), from: from.value, text, inReplyTo: request.headers.get('x-in-reply-to') },
           })
           if (!delivery.ok) return failure(delivery.error.message, 400)
           return dispatch(contact.to, delivery.value)

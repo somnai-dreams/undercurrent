@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFi
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { recentWindowMs, registrationLifetimeMs } from '../src/registry.ts'
+import { isObject } from '../src/validation.ts'
 
 type Fixture = { home: string; executable: string; capture: string }
 type CommandResult = { exitCode: number; stdout: string; stderr: string }
@@ -67,6 +68,11 @@ describe('CLI', () => {
       expect(result.exitCode).toBe(0)
       expect(result.stderr).toBe('')
       const prepared = output(result)
+      if (!isObject(prepared)) throw new Error('Expected prepared message object')
+      const createdAt = prepared['createdAt']
+      if (typeof createdAt !== 'string') throw new Error('Missing creation timestamp')
+      expect(new Date(createdAt).toISOString()).toBe(createdAt)
+      expect(prepared).toHaveProperty('text', expect.stringContaining(`Created at: ${createdAt}\n`))
       expect(prepared).toMatchObject({ status: 'prepared', from: `codex:${sender}`, to: `codex:${recipient}`, destination: { provider: 'codex', threadId: recipient } })
       expect(prepared).toHaveProperty('messageId', expect.stringMatching(/^[0-9a-f-]{36}$/))
       expect(prepared).toHaveProperty('text', expect.stringContaining(`From: codex:${sender}\nIn reply to: ${replyId}\n`))

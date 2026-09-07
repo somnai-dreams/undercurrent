@@ -94,6 +94,8 @@ Commands return JSON. A send reports the message ID, addresses, and available na
 
 An actual reply confirms the agent received the message. Claude's socket provides no admission receipt, and native controls can hold or refuse incoming text. Codex failures include native diagnostics when available.
 
+Every message includes `Created at`, an ISO timestamp in UTC (the trailing `Z`). The sender records it once when sending or preparing a message; native handoffs and the remote relay preserve it. Send/preparation JSON also includes `createdAt`. Replies get their own timestamp and refer to the earlier message by ID. Creation time comes from the sender's clock; it is not a delivery receipt or a guarantee of ordering between machines.
+
 `uc peers` shows conversations seen within 30 minutes; `--all` includes contacts seen within three days. Registry reads delete registrations after three days without activity, including when resolving an exact address. Cleanup happens on use, with no scheduled job. Remote discovery and delivery apply the same expiry on the receiving machine. `lastSeenAt` is the registration file's modification time: joining writes it, and `UserPromptSubmit`, `PostToolUse` and `Stop` hooks update it without rewriting the registration.
 
 Recently seen does not mean currently working. Names and descriptions are self-reported context, never ownership of files or tasks. Do not defer work on their authority; use fresh evidence to resolve an actual editing conflict. Descriptions can outlive the work they mention.

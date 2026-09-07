@@ -1,12 +1,12 @@
 import { formatAddress, parseAddress, parseNativeAddress } from './data.ts'
 import type { Address, Failure, Result } from './data.ts'
-import type { SendOutcome } from './send.ts'
-import { hasKeys, isObject, isToken, isUuid } from './validation.ts'
+import type { Message, SendOutcome } from './send.ts'
+import { hasKeys, isIsoTimestamp, isObject, isToken, isUuid } from './validation.ts'
 
 export type RemoteIdentity = { origin: string; machineId: string; ownerToken: string }
 export type RemoteContact = { id: string }
 export type RemoteAddress = { provider: 'remote'; contactId: string; peer: Address }
-export type RemoteMessage = { id: string; from: Address; text: string; inReplyTo: string | null }
+export type RemoteMessage = Omit<Message, 'from'> & { from: Address }
 export type Delivery =
   | { type: 'send'; requestId: string; contactId: string; to: Address; message: RemoteMessage }
   | { type: 'peers'; requestId: string; contactId: string; all: boolean }
@@ -174,11 +174,13 @@ export function parseReceipt(raw: unknown): Result<Receipt> {
 }
 
 function parseRemoteMessage(raw: unknown): Result<RemoteMessage> {
-  if (!isObject(raw) || !hasKeys(raw, ['id', 'from', 'text', 'inReplyTo'])) {
-    return invalid('A remote message must contain exactly id, from, text, and inReplyTo.')
+  if (!isObject(raw) || !hasKeys(raw, ['id', 'createdAt', 'from', 'text', 'inReplyTo'])) {
+    return invalid('A remote message must contain exactly id, createdAt, from, text, and inReplyTo.')
   }
   const id = raw['id']
   const inReplyTo = raw['inReplyTo']
+  const createdAt = raw['createdAt']
+  if (!isIsoTimestamp(createdAt)) return invalid('Message createdAt must be a UTC ISO timestamp, such as 2026-09-07T02:00:00.000Z.')
   if (!isUuid(id) || (inReplyTo !== null && !isUuid(inReplyTo))) return invalid('Message id and non-null inReplyTo must be UUIDs.')
   const text = raw['text']
   if (typeof text !== 'string' || text.trim() === '' || text.includes('\0') || Buffer.byteLength(text, 'utf8') > 32 * 1024) {
@@ -186,7 +188,7 @@ function parseRemoteMessage(raw: unknown): Result<RemoteMessage> {
   }
   const from = parseNativeAddress(raw['from'])
   if (!from.ok) return from
-  return { ok: true, value: { id: id.toLowerCase(), from: from.value, text, inReplyTo: inReplyTo === null ? null : inReplyTo.toLowerCase() } }
+  return { ok: true, value: { id: id.toLowerCase(), createdAt, from: from.value, text, inReplyTo: inReplyTo === null ? null : inReplyTo.toLowerCase() } }
 }
 
 function invalid(message: string): Failure {

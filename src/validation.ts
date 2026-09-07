@@ -18,6 +18,12 @@ export function isToken(value: unknown): value is string {
   return typeof value === 'string' && tokenPattern.test(value)
 }
 
+export function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const time = Date.parse(value)
+  return Number.isFinite(time) && new Date(time).toISOString() === value
+}
+
 export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

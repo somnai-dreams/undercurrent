@@ -127,6 +127,7 @@ export async function sendRemote(home: string, to: RemoteAddress, message: Messa
     'x-from': formatAddress(message.from),
     'x-to': formatAddress(target.value),
     'x-request': message.id,
+    'x-created-at': message.createdAt,
     'x-contact': contactId.value,
   }
   if (message.inReplyTo !== null) headers['x-in-reply-to'] = message.inReplyTo

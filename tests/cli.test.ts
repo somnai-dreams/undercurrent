@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { recentWindowMs, registrationLifetimeMs } from '../src/registry.ts'
 
 type Fixture = { home: string; executable: string; capture: string }
 type CommandResult = { exitCode: number; stdout: string; stderr: string }
@@ -18,6 +19,37 @@ afterEach(async () => {
 })
 
 describe('CLI', () => {
+  test('native preparation accepts older contacts but rejects expired recipients and senders without dispatch', async () => {
+    const fixture = await joinedPair()
+    const identity = { CODEX_THREAD_ID: sender }
+    const senderPath = join(fixture.home, 'peers', `codex:${sender}.json`)
+    const recipientPath = join(fixture.home, 'peers', `codex:${recipient}.json`)
+    const old = new Date(Date.now() - recentWindowMs - 60_000)
+    const expired = new Date(Date.now() - registrationLifetimeMs - 60_000)
+    await utimes(recipientPath, old, old)
+    const before = await readFile(recipientPath, 'utf8')
+    expect(output(await run(fixture, identity, ['prepare', 'review', 'Older contact.']))).toMatchObject({ status: 'prepared', to: `codex:${recipient}` })
+    expect(await readFile(recipientPath, 'utf8')).toBe(before)
+
+    for (const target of ['review', `codex:${recipient}`]) {
+      expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
+      await utimes(recipientPath, expired, expired)
+      const rejected = await run(fixture, identity, ['prepare', target, 'Expired contact.'])
+      expect(rejected.exitCode).toBe(1)
+      expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'not-found' })
+      expect(output(rejected)).not.toHaveProperty('text')
+      expect(await Bun.file(recipientPath).exists()).toBe(false)
+    }
+    expect((await run(fixture, { CODEX_THREAD_ID: recipient }, ['join', '--name', 'review'])).exitCode).toBe(0)
+    expect(output(await run(fixture, identity, ['prepare', 'review', 'After rejoin.']))).toMatchObject({ status: 'prepared' })
+    await utimes(senderPath, expired, expired)
+    const rejected = await run(fixture, identity, ['prepare', 'review', 'Expired sender.'])
+    expect(rejected.exitCode).toBe(1)
+    expect(output(rejected)).toMatchObject({ status: 'failed', kind: 'not-found' })
+    expect(await Bun.file(senderPath).exists()).toBe(false)
+    expect(await Bun.file(fixture.capture).exists()).toBe(false)
+  })
+
   test('prepares a literal native message without delivering it or changing registrations', async () => {
     const fixture = await joinedPair()
     const text = '  Review `code` and $(expressions); keep "$HOME", λ 🦉 and newlines.\nSecond line.\n'
@@ -197,7 +229,7 @@ describe('CLI', () => {
     expect(help.stdout).toContain('not read')
     const peers = await run(fixture, {}, ['peers'])
     expect(peers.exitCode).toBe(0)
-    expect(output(peers)).toEqual({ peers: [] })
+    expect(output(peers)).toMatchObject({ peers: [] })
     const missingIdentity = await run(fixture, {}, ['join', '--name', 'sender'])
     expect(missingIdentity.exitCode).toBe(1)
     expect(output(missingIdentity)).toMatchObject({ status: 'failed', kind: 'invalid-input' })
@@ -211,14 +243,14 @@ describe('CLI', () => {
     expect(joined.exitCode).toBe(0)
     expect(output(joined)).toMatchObject({ status: 'joined', address: `codex:${sender}`, name: 'implementation' })
     expect((await run(fixture, claude, ['join', '--name', 'review'])).exitCode).toBe(0)
-    expect(output(await run(fixture, {}, ['peers']))).toEqual({ peers: [
+    expect(output(await run(fixture, {}, ['peers']))).toMatchObject({ peers: [
       { address: `codex:${sender}`, name: 'implementation', about: null, projectRoot: fixture.home, relation: 'peer', destination: { provider: 'codex', threadId: sender } },
       { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, relation: 'peer', destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
     ] })
     const left = await run(fixture, codex, ['leave'])
     expect(left.exitCode).toBe(0)
     expect(output(left)).toEqual({ status: 'left', address: `codex:${sender}` })
-    expect(output(await run(fixture, {}, ['peers']))).toEqual({ peers: [
+    expect(output(await run(fixture, {}, ['peers']))).toMatchObject({ peers: [
       { address: `claude:${recipient}`, name: 'review', about: null, projectRoot: fixture.home, relation: 'peer', destination: { provider: 'claude', sessionId: recipient, socketPath: claude.CLAUDE_CODE_MESSAGING_SOCKET } },
     ] })
   })

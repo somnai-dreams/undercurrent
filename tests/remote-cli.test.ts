@@ -50,7 +50,7 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
 
     const privatePeers = await run(first, ['remote', 'peers', contactId])
     expect(privatePeers.exitCode).toBe(0)
-    expect(JSON.parse(privatePeers.stdout) as unknown).toEqual({ peers: [{ name: 'reviewer', address: `remote:${contactId}/codex:${nativeId}`, relation: 'stranger' }] })
+    expect(JSON.parse(privatePeers.stdout) as unknown).toMatchObject({ peers: [{ name: 'reviewer', address: `remote:${contactId}/codex:${nativeId}`, relation: 'stranger' }] })
     await mkdir(join(second, 'private-project'))
     await writeFile(join(second, 'private-project', '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
     expect((await run(second, ['join', '--name', 'private'], hiddenId)).exitCode).toBe(0)
@@ -59,11 +59,11 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
     const secondAddress = `remote:${contactId}/codex:${nativeId}`
     const firstAddress = `remote:${contactId}/codex:${nativeId}`
     const peers = await run(first, ['remote', 'peers', contactId])
-    expect(JSON.parse(peers.stdout) as unknown).toEqual({ peers: [{ name: 'private', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }, { name: 'reviewer', address: secondAddress, relation: 'peer' }] })
+    expect(JSON.parse(peers.stdout) as unknown).toMatchObject({ peers: [{ name: 'private', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }, { name: 'reviewer', address: secondAddress, relation: 'peer' }] })
     expect((await run(second, ['join', '--name', 'renamed'], nativeId)).exitCode).toBe(0)
     expect((await run(second, ['join', '--name', 'reviewer'], hiddenId)).exitCode).toBe(0)
     const renamedPeers = await run(first, ['remote', 'peers', contactId])
-    expect(JSON.parse(renamedPeers.stdout) as unknown).toEqual({ peers: [{ name: 'renamed', address: secondAddress, relation: 'peer' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
+    expect(JSON.parse(renamedPeers.stdout) as unknown).toMatchObject({ peers: [{ name: 'renamed', address: secondAddress, relation: 'peer' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
 
     const nested = join(first, 'project', 'nested')
     await mkdir(join(nested, '.git'), { recursive: true })
@@ -72,7 +72,7 @@ test('CLI invitation, project permissions, strangers, round trip, and revocation
     expect(JSON.parse(attachedPeers.stdout) as unknown).toEqual(JSON.parse(renamedPeers.stdout) as unknown)
     const unattachedPeers = await run(first, ['remote', 'peers', contactId], undefined, nested)
     expect(unattachedPeers.exitCode).toBe(0)
-    expect(JSON.parse(unattachedPeers.stdout) as unknown).toEqual({ peers: [{ name: 'renamed', address: secondAddress, relation: 'stranger' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
+    expect(JSON.parse(unattachedPeers.stdout) as unknown).toMatchObject({ peers: [{ name: 'renamed', address: secondAddress, relation: 'stranger' }, { name: 'reviewer', address: `remote:${contactId}/codex:${hiddenId}`, relation: 'stranger' }] })
 
     const text = 'λ 🦉 "quotes" \'single\' `backticks` $(not-a-command) $HOME\nsecond line — keep Unicode and punctuation'
     const sent = await run(first, ['send', secondAddress, text], nativeId, nested)

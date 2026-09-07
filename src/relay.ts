@@ -196,7 +196,9 @@ export async function startRelay(options: RelayOptions): Promise<Bun.Server<Brid
         case 'POST /peers': {
           const contact = route(request)
           if (contact instanceof Response) return contact
-          return dispatch(contact.to, { type: 'peers', requestId: crypto.randomUUID(), contactId: contact.id })
+          const view = request.headers.get('x-peer-view') ?? 'recent'
+          if (view !== 'recent' && view !== 'all') return failure('x-peer-view must be recent or all.', 400)
+          return dispatch(contact.to, { type: 'peers', requestId: crypto.randomUUID(), contactId: contact.id, all: view === 'all' })
         }
         default: return failure('Unknown relay endpoint.', 404)
       }

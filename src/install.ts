@@ -60,7 +60,7 @@ export async function installIntegration(home: string, scope: InstallScope, prov
     if (!isObject(raw)) return failure(`${path} must contain a JSON object.`)
     const hooks: unknown = raw['hooks'] ?? {}
     if (!isObject(hooks)) return failure(`${path}: hooks must be an object.`)
-    for (const event of ['SessionStart', 'SessionEnd']) {
+    for (const event of ['SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PostToolUse', 'Stop']) {
       const groups: unknown = hooks[event] ?? []
       if (!Array.isArray(groups)) return failure(`${path}: ${event} must be an array.`)
       const entries: unknown[] = groups

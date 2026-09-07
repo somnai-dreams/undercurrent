@@ -2,6 +2,22 @@
 
 This records observed behavior, including incomplete live checks.
 
+## Registration retention — 6 September 2026
+
+Registry reads now delete registrations after three days without activity, including from `--all` and exact-address resolution. The 30-minute default discovery window is unchanged. Expiry removes only the registration; native conversations, project policies and remote pairings are unaffected. Automatic startup/resume can rejoin, while manual sessions need `uc join`.
+
+Cleanup takes the same per-address filesystem lock as join, refresh and leave, then reads the record again before deletion. This protects a timestamp refresh or atomic replacement that happened while cleanup was waiting. Unexpired reads need no lock. Lock waits are bounded at one second; an interrupted command's leftover lock is reported rather than stolen. There is no daemon, additional dependency or registry format migration.
+
+Types, lint and all 90 tests pass (864 assertions, 8.45 seconds). Coverage includes the exact three-day boundary, retained registration bytes, future timestamps, physical file removal, expired exact addresses and labels, manual versus automatic rejoining, refresh and replacement during cleanup, concurrent joins and cleanup, leave versus activity, bounded lock contention, and temporary-file cleanup on failed joins. Remote fixtures verify both discovery and direct-send expiry on the receiver without deleting the pairing. The updated agent skill passes its validator. These are local and loopback fixtures; no existing peer was messaged for this slice.
+
+## Peer discovery freshness — 6 September 2026
+
+`uc peers` and remote discovery default to registrations seen within 30 minutes; `--all` includes older contacts. The registration file's modification time supplies `lastSeenAt`, without changing its JSON format. Native prompt, tool-completion and stop hooks refresh existing records without rewriting descriptions or undoing `uc leave`. A directory entry explicitly conveys neither current work nor ownership.
+
+Types, lint and 85 tests pass (791 assertions, 7.11 seconds). New cases cover the exact expiry boundary, future timestamps, unchanged registration bytes, ambiguous names spanning old and new contacts, hook identity mismatch, refresh after activity, no recreation after leave, valid quiet Stop output, and remote expiry at the receiver while direct replies remain usable.
+
+An isolated Claude Code 2.1.263 run used the actual installed hook commands and a loopback model fixture that invoked only native `ListAgents`. `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` all reported success. Artificially aged registration metadata was refreshed after the native tool and again at Stop. No model service or existing peer was contacted. The first fixture run mishandled an optional HEAD request; after fixing that fixture endpoint, the complete run exited successfully. Codex event commands are covered by the installation fixtures; native hook trust still requires the owner's review.
+
 ## Native tool handoff prototype — 6 September 2026
 
 `uc prepare` shares the CLI's sender, message, recipient, and project-policy checks with `uc send`, then returns a prepared envelope and exact native identity without invoking delivery. Fixtures cover both harnesses, unchanged registrations, literal file/stdin text, reply references, missing and ambiguous peers, stale sender sockets, current permissions after changing directories, worktrees, and rejection of cross-harness or remote preparation.

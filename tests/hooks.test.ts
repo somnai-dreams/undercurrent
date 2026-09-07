@@ -47,8 +47,8 @@ test('resume refreshes Claude socket and preserves descriptions; only session en
   expect(resumed.ok && resumed.value).toContain(`claude:${first}`)
   expect(await runHook(home, 'claude', event(root), { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/new.sock' })).toEqual({ ok: true, value: null })
   const peers = await listPeers(home)
-  expect(peers.ok && peers.value).toContainEqual({ name: 'reviewer', about: 'Reviewing transport', projectRoot: root, destination: { provider: 'claude', sessionId: first, socketPath: '/tmp/new.sock' } })
-  expect((await runHook(home, 'claude', event(root, first, 'Stop'), {})).ok).toBeFalse()
+  expect(peers.ok ? peers.value.find(peer => peer.name === 'reviewer') : null).toMatchObject({ name: 'reviewer', about: 'Reviewing transport', projectRoot: root, destination: { provider: 'claude', sessionId: first, socketPath: '/tmp/new.sock' } })
+  expect((await runHook(home, 'claude', event(root, first, 'Stop'), {})).ok).toBeTrue()
   const idle = await listPeers(home)
   expect(idle.ok && idle.value.length).toBe(2)
   expect(await runHook(home, 'claude', event(root, first, 'SessionEnd'), {})).toEqual({ ok: true, value: null })
@@ -116,7 +116,7 @@ test('an unmanaged skill has an explicit backup recovery; only the exact legacy 
   const updated = await readFile(hooks, 'utf8')
   expect(updated).toContain(JSON.stringify(unrelated))
   expect(updated).not.toContain(JSON.stringify(oldCommand))
-  expect(updated.match(/# undercurrent:claude/g)).toHaveLength(2)
+  expect(updated.match(/# undercurrent:claude/g)).toHaveLength(5)
 })
 
 test('project installer preserves other hooks/settings, is repeatable, and its actual command consumes native-shaped events', async () => {

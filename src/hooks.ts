@@ -2,10 +2,10 @@ import { isAbsolute } from 'node:path'
 import { addressOf, formatAddress, parseAddress, parseDestination } from './data.ts'
 import type { Destination, Provider, Result } from './data.ts'
 import { findProject } from './project.ts'
-import { joinPeer, leavePeer, listRegistrations } from './registry.ts'
+import { joinPeer, leavePeer, listRegistrations, refreshPeer } from './registry.ts'
 import { isObject } from './validation.ts'
 
-type SessionEvent = { event: 'SessionStart' | 'SessionEnd'; sessionId: string; cwd: string }
+type SessionEvent = { event: 'SessionStart' | 'SessionEnd' | 'UserPromptSubmit' | 'PostToolUse' | 'Stop'; sessionId: string; cwd: string }
 
 export async function runHook(home: string, provider: Provider, raw: unknown, env: Readonly<Record<string, string | undefined>> = process.env): Promise<Result<string | null>> {
   const parsed = parseEvent(raw)
@@ -20,6 +20,10 @@ export async function runHook(home: string, provider: Provider, raw: unknown, en
   if (event.event === 'SessionEnd') {
     const left = await leavePeer(home, address.value)
     return left.ok ? { ok: true, value: null } : left
+  }
+  if (event.event !== 'SessionStart') {
+    const refreshed = await refreshPeer(home, address.value)
+    return refreshed.ok ? { ok: true, value: null } : refreshed
   }
 
   const project = await findProject(home, event.cwd)
@@ -60,7 +64,7 @@ export async function runHook(home: string, provider: Provider, raw: unknown, en
 function parseEvent(raw: unknown): Result<SessionEvent> {
   if (!isObject(raw)) return invalid('A hook requires a native session event object on stdin.')
   const event = raw['hook_event_name']
-  if (event !== 'SessionStart' && event !== 'SessionEnd') return invalid('Only SessionStart and SessionEnd are supported. Turn completion does not detach a peer.')
+  if (event !== 'SessionStart' && event !== 'SessionEnd' && event !== 'UserPromptSubmit' && event !== 'PostToolUse' && event !== 'Stop') return invalid('Unsupported Undercurrent lifecycle event.')
   const sessionId = raw['session_id']
   const cwd = raw['cwd']
   if (typeof sessionId !== 'string' || typeof cwd !== 'string' || !isAbsolute(cwd) || /\p{Cc}/u.test(cwd)) {

@@ -50,6 +50,7 @@ test('global setup installs both hosts once; actual commands pin state and use t
     const start = await commands(integration.hooks, 'SessionStart')
     expect(start).toHaveLength(1)
     expect(await commands(integration.hooks, 'SessionEnd')).toHaveLength(1)
+    for (const event of ['UserPromptSubmit', 'PostToolUse', 'Stop']) expect(await commands(integration.hooks, event)).toHaveLength(1)
     const child = Bun.spawn(['/bin/sh', '-c', start[0]!], {
       cwd: root,
       env: { UNDERCURRENT_HOME: join(root, 'wrong-state'), CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/setup-fixture.sock' },

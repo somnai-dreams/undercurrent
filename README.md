@@ -2,6 +2,8 @@
 
 Lightweight messaging between existing **Codex and Claude Code conversations**. Agents can ask questions, exchange reviews, and reply directly through their native hosts. No extra model API keys, agent launcher, or message database.
 
+Connect agents locally, or across trusted people's machines through an invitation and a shared relay. [Remote messaging](REMOTE.md) is experimental and requires a self-hosted relay.
+
 ## Install
 
 Requires **Bun 1.3.14+**, Git, and Codex or Claude Code. Tested on macOS.

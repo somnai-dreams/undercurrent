@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path'
 import { addressOf, formatAddress } from '../../src/data.ts'
 import type { Address, Result } from '../../src/data.ts'
 import { authorizeLocal } from '../../src/project.ts'
-import { listPeers, resolvePeer } from '../../src/registry.ts'
+import { checkRecipient, listPeers, resolvePeer } from '../../src/registry.ts'
 import { createMessage, sendMessage } from '../../src/send.ts'
 import type { SendOptions, SendOutcome } from '../../src/send.ts'
 import { errorText, isObject, isUuid } from '../../src/validation.ts'
@@ -123,6 +123,8 @@ async function forward(home: string, target: Address, frame: NativeMessage, opti
   if (!recipient.ok) return { status: 'failed', error: recipient.error.message }
   const allowed = await authorizeLocal(home, sender.projectRoot, recipient.value.projectRoot)
   if (!allowed.ok) return { status: 'failed', error: allowed.error.message }
+  const stale = checkRecipient(recipient.value, false)
+  if (stale !== null) return stale
   // Preserve the native envelope literally, including its peer-input provenance.
   // Its from-name / from-mode fields never become permission or identity grants.
   const message = createMessage(addressOf(sender.destination), frame.text, null)

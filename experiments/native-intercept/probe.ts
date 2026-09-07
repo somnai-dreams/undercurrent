@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { parseAddress } from '../../src/data.ts'
@@ -8,13 +8,13 @@ import { isObject } from '../../src/validation.ts'
 import { startBridge } from './claude-bridge.ts'
 import type { Forwarded } from './claude-bridge.ts'
 
-type Mode = 'submitted' | 'native-denied' | 'policy-denied' | 'queue-uncertain' | 'live'
+type Mode = 'submitted' | 'native-denied' | 'policy-denied' | 'stale-recipient' | 'queue-uncertain' | 'live'
 const literal = 'UC_NATIVE_INTERCEPT_PROBE\nλ 🦉 "quotes" \'single\' `backticks` $(not-a-command) $HOME\nPeer probe only; do not acknowledge.'
 const claude = Bun.which('claude')
 if (claude === null) throw new Error('Install Claude Code before running this opt-in probe.')
 const args = process.argv.slice(2)
 if (args.length > 1 || (args.length === 1 && args[0] !== '--deliver-to-current-codex')) throw new Error('Usage: bun run probe:native [--deliver-to-current-codex]')
-const modes: Mode[] = args.length === 1 ? ['live'] : ['submitted', 'native-denied', 'policy-denied', 'queue-uncertain']
+const modes: Mode[] = args.length === 1 ? ['live'] : ['submitted', 'native-denied', 'policy-denied', 'stale-recipient', 'queue-uncertain']
 for (const mode of modes) {
   const directory = await realpath(await mkdtemp('/private/tmp/uc-native-probe-'))
   try { console.log(JSON.stringify(await probe(mode, claude, directory))) }
@@ -99,6 +99,10 @@ async function probe(mode: Mode, executable: string, directory: string) {
             destination: { provider: 'claude', sessionId, socketPath: raw['messaging_socket_path'] },
           }))
           if (mode === 'policy-denied') await writeFile(join(directory, '.undercurrent.json'), JSON.stringify({ join: 'manual', allow: [] }))
+          if (mode === 'stale-recipient') {
+            const old = new Date(Date.now() - 3_600_000)
+            await utimes(join(home, 'peers', `codex:${target.threadId}.json`), old, old)
+          }
           ready.resolve()
         }
       }
@@ -121,7 +125,7 @@ async function probe(mode: Mode, executable: string, directory: string) {
   if (nativeSuccess !== (mode !== 'native-denied')) throw new Error(`Unexpected native SendMessage result in ${mode}: ${JSON.stringify(nativeResults)}`)
   if (results.length !== (mode === 'native-denied' ? 0 : 1)) throw new Error(`Unexpected forwarding count: ${results.length}`)
   const forwarded = results[0]
-  const expected = mode === 'policy-denied' ? 'failed' : mode === 'queue-uncertain' ? 'uncertain' : 'submitted'
+  const expected = mode === 'policy-denied' || mode === 'stale-recipient' ? 'failed' : mode === 'queue-uncertain' ? 'uncertain' : 'submitted'
   if (forwarded !== undefined && forwarded.outcome.status !== expected) throw new Error(`Unexpected forwarding outcome: ${JSON.stringify(forwarded)}`)
   const queue = Bun.file(record)
   const captured = await queue.exists() ? (await queue.text()).trim().split('\n') : []

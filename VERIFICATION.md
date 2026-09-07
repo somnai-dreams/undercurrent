@@ -2,6 +2,18 @@
 
 This records observed behavior, including incomplete live checks.
 
+## Native handoff dogfood and message timestamps — 7 September 2026
+
+The native handoff branch now includes main's discovery and retention changes. Preparation accepts older contacts still inside the three-day retention period; expired senders or recipients fail without dispatch, and rejoining restores preparation. Every message receives one canonical UTC `createdAt` value when created. The rendered envelope, prepared/send JSON, and remote transport preserve it. It is the sender's clock reading, not a delivery receipt or a cross-machine ordering guarantee. The current remote wire format requires upgrading the relay and both bridges together; persisted identities and pairings are unchanged.
+
+Types, lint and all 98 tests pass (1,001 assertions, 10.46 seconds), with permission to open the suite's temporary sockets and loopback listeners. Coverage includes preparation after discovery/retention expiry, delayed rendering, distinct reply creation times, malformed remote timestamps, and timestamp preservation through remote delivery. The agent skill validator and `git diff --check` pass.
+
+The user approved a temporary Codex desktop task, `01a079b0-8ed3-7931-86c7-7289d211bd07`, for a real native round trip with coordinator `01a06f6d-bdbd-7822-a985-3337ea851a95`. Both registered their actual native IDs in an isolated test registry under the existing project policy. Each sender matched the exact native task ID, ran the branch's `uc prepare`, and passed its complete text as a structured argument to the desktop's existing-task messaging tool. No courier fallback was used. Native tools returned the destination ID without error, but supplied no queued/read status; the subsequent model-visible replies establish receipt separately.
+
+An idle-recipient request, `b35a9102-0103-4243-9809-3386b88e1f42`, carried creation time `2026-09-07T02:32:23.982Z`. Reply `8d8728b9-917e-46f6-a2f9-ac1d88ed7076` arrived in the coordinator's model context with correct threading, a new creation time, and the original timestamp and multiline Unicode, quotes, backticks, shell substitutions and variables reproduced literally. A second probe, `61e873a0-e196-4c89-8e65-c3a741d45de4`, was dispatched after a native status snapshot confirmed the recipient's review turn was active. Its threaded reply, `f95288f8-2708-4fe0-b103-bde9b9300005`, confirmed intact text and timestamp. The peer consumed that probe after its waiting command finished, while the same review turn remained active. This verifies active-turn receipt, not interruption of an in-flight tool.
+
+The peer reviewed commit `be3baf0` without editing files and found no material correctness issue in preparation, identity matching, policy checks or timestamp propagation. Review reply `00da4063-9463-45dd-982f-3261081faef2` also arrived through the native tool with its original reply reference and creation time. The peer inspected tests; the full suite above was run by the coordinator. Both participants removed their own isolated test registrations after completion. The installed main checkout, project/global permissions and native settings were unchanged. Claude-to-Claude native handoff and a two-machine remote exchange remain unverified; the skill requires an exact native match before attempting that route.
+
 ## Registration retention — 6 September 2026
 
 Registry reads now delete registrations after three days without activity, including from `--all` and exact-address resolution. The 30-minute default discovery window is unchanged. Expiry removes only the registration; native conversations, project policies and remote pairings are unaffected. Automatic startup/resume can rejoin, while manual sessions need `uc join`.
@@ -24,7 +36,7 @@ An isolated Claude Code 2.1.263 run used the actual installed hook commands and 
 
 The full check passes: 86 tests, 831 assertions, types, and lint. The suite requires permission to open its temporary sockets and loopback listeners; the first sandboxed full run could not open those fixtures, and the rerun with that access passed. Skill validation and packaging also pass. The installed main checkout was left in place while this prototype was built in an isolated branch.
 
-Live handoff through the agent-facing native tools remains unverified, including whether Claude's native discovery exposes enough identity information to match an Undercurrent registration exactly. The skill uses the courier when an exact native match cannot be established before sending. A prepared result is not submission evidence, and its permission check is a snapshot: subsequent native-tool delivery is governed by that host and the agent following the skill.
+At this snapshot, live handoff through the agent-facing native tools was unverified. The 7 September dogfood above verifies Codex-to-Codex handoff; whether Claude's native discovery exposes enough identity information to match an Undercurrent registration exactly remains unverified. The skill uses the courier when an exact native match cannot be established before sending. A prepared result is not submission evidence, and its permission check is a snapshot: subsequent native-tool delivery is governed by that host and the agent following the skill.
 
 ## Automated checks — 5 September 2026
 
@@ -133,6 +145,6 @@ The review's proposed rule that every non-abort fetch rejection means no submiss
 
 ## Remaining checks
 
-Fixture coverage establishes distinct addresses in one registry, but does not replace two live same-provider conversations. Live stopped/unloaded Codex targets, a resumed Claude session, and host-held or refused inbox messages have not been exercised. These remain compatibility checks, not product guarantees. Other native versions and Codex terminal reception are unverified.
+Two live Codex desktop conversations exchanged prepared envelopes through native tools as recorded above. Two live Claude conversations, stopped/unloaded Codex targets, a resumed Claude session, and host-held or refused inbox messages have not been exercised. These remain compatibility checks, not product guarantees. Other native versions and Codex terminal reception are unverified.
 
 The remote prototype still needs two physical machines through a trusted HTTPS relay, including real sleep, disconnection, reconnect, and revocation observations. HTTPS deployment, native access from a separately launched bridge, and how frequently live-only messaging becomes inconvenient are unverified. Offline storage should be reconsidered only after that experiment.

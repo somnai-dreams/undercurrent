@@ -11,6 +11,9 @@ export async function runHook(home: string, provider: Provider, raw: unknown, en
   const parsed = parseEvent(raw)
   if (!parsed.ok) return parsed
   const event = parsed.value
+  // Running hosts may retain the old hook configuration until they reload.
+  // Keep that retired invocation silent, with no registry reads or writes.
+  if (event.event === 'PostToolUse') return { ok: true, value: null }
   const address = parseAddress(`${provider}:${event.sessionId}`)
   if (!address.ok) return address
   const nativeId = env[provider === 'codex' ? 'CODEX_THREAD_ID' : 'CLAUDE_CODE_SESSION_ID']

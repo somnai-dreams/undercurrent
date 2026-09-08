@@ -52,7 +52,7 @@ test('activity hooks refresh only an existing identity without rewriting context
   const { home, path } = await fixture()
   const old = new Date(Date.now() - recentWindowMs - 60_000)
   const before = await readFile(path, 'utf8')
-  for (const hook of ['UserPromptSubmit', 'PostToolUse', 'Stop']) {
+  for (const hook of ['UserPromptSubmit', 'Stop']) {
     await utimes(path, old, old)
     const event = { hook_event_name: hook, session_id: id, cwd: '/an/unrelated/directory' }
     expect(unwrap(await listPeers(home))).toEqual([])
@@ -65,11 +65,24 @@ test('activity hooks refresh only an existing identity without rewriting context
     expect((await runHook(home, 'codex', event, { CODEX_THREAD_ID: crypto.randomUUID() })).ok).toBe(false)
   }
   unwrap(await leavePeer(home, address))
-  for (const hook of ['UserPromptSubmit', 'PostToolUse', 'Stop']) {
+  for (const hook of ['UserPromptSubmit', 'Stop']) {
     unwrap(await runHook(home, 'codex', { hook_event_name: hook, session_id: id, cwd: home }, {}))
   }
   expect(unwrap(await listRegistrations(home))).toEqual([])
   expect(await Bun.file(path).exists()).toBe(false)
+})
+
+test('a cached retired per-tool hook is silent and never refreshes or recreates a registration', async () => {
+  const { home, path } = await fixture()
+  const old = new Date(Date.now() - recentWindowMs - 60_000)
+  await utimes(path, old, old)
+  const before = unwrap(await readPeer(home, address))
+  const event = { hook_event_name: 'PostToolUse', session_id: id, cwd: home }
+  expect(unwrap(await runHook(home, 'codex', event, {}))).toBeNull()
+  expect(unwrap(await readPeer(home, address))).toEqual(before)
+  unwrap(await leavePeer(home, address))
+  expect(unwrap(await runHook(home, 'codex', event, {}))).toBeNull()
+  expect(await Bun.file(path).exists()).toBeFalse()
 })
 
 test('CLI omits old work claims by default and labels all-contact output without changing registration bytes', async () => {

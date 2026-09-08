@@ -116,7 +116,7 @@ test('an unmanaged skill has an explicit backup recovery; only the exact legacy 
   const updated = await readFile(hooks, 'utf8')
   expect(updated).toContain(JSON.stringify(unrelated))
   expect(updated).not.toContain(JSON.stringify(oldCommand))
-  expect(updated.match(/# undercurrent:claude/g)).toHaveLength(5)
+  expect(updated.match(/# undercurrent:claude/g)).toHaveLength(4)
 })
 
 test('project installer preserves other hooks/settings, is repeatable, and its actual command consumes native-shaped events', async () => {

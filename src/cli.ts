@@ -86,8 +86,8 @@ overrides them per project. join controls participation; allow controls messages
 Joined strangers are discoverable but messages fail without waking them.
 Setup installs lifecycle hooks globally or for this project. New setup policy
 is auto + self; existing settings are preserved. self includes linked worktrees
-of the same Git repository; each checkout's policy still applies. Prompt,
-tool-completion and stop hooks refresh existing registrations. Registry reads
+of the same Git repository; each checkout's policy still applies. Prompt and
+stop hooks refresh existing registrations. No per-tool hooks are installed. Registry reads
 delete registrations after three days without activity; rejoin to return.
 send and prepare refuse recipients last seen over 30 minutes ago. Check the
 recipient, then use its exact address with --allow-stale for an intentional send.

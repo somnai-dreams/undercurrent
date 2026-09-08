@@ -72,7 +72,10 @@ export async function installIntegration(home: string, scope: InstallScope, prov
           && (handler['command'].endsWith(` ${tag}`) || handler['command'] === previousCommand)))
         if (kept.length > 0 || handlers.length === 0) updated.push({ ...group, hooks: kept })
       }
-      hooks[event] = [...updated, { hooks: [{ type: 'command', command, timeout: event === 'SessionStart' ? 10 : 3 }] }]
+      // Remove our previously installed per-tool heartbeat without replacing it.
+      if (event !== 'PostToolUse') updated.push({ hooks: [{ type: 'command', command, timeout: event === 'SessionStart' ? 10 : 3 }] })
+      if (updated.length === 0) delete hooks[event]
+      else hooks[event] = updated
     }
     const skillText = await readFile(join(import.meta.dir, '..', 'skills/undercurrent/SKILL.md'), 'utf8')
     let existing: string | null = null

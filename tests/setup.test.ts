@@ -23,7 +23,7 @@ function unwrap<T>(result: Result<T>): T { if (!result.ok) throw new Error(resul
 async function commands(path: string, event: string): Promise<string[]> {
   const raw: unknown = JSON.parse(await readFile(path, 'utf8')) as unknown
   if (!isObject(raw) || !isObject(raw['hooks'])) throw new Error('Missing hooks')
-  const groups: unknown = raw['hooks'][event]
+  const groups: unknown = raw['hooks'][event] ?? []
   if (!Array.isArray(groups)) throw new Error('Missing event')
   const result: string[] = []
   for (const group of groups) {
@@ -50,7 +50,8 @@ test('global setup installs both hosts once; actual commands pin state and use t
     const start = await commands(integration.hooks, 'SessionStart')
     expect(start).toHaveLength(1)
     expect(await commands(integration.hooks, 'SessionEnd')).toHaveLength(1)
-    for (const event of ['UserPromptSubmit', 'PostToolUse', 'Stop']) expect(await commands(integration.hooks, event)).toHaveLength(1)
+    for (const event of ['UserPromptSubmit', 'Stop']) expect(await commands(integration.hooks, event)).toHaveLength(1)
+    expect(await commands(integration.hooks, 'PostToolUse')).toEqual([])
     const child = Bun.spawn(['/bin/sh', '-c', start[0]!], {
       cwd: root,
       env: { UNDERCURRENT_HOME: join(root, 'wrong-state'), CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/setup-fixture.sock' },
@@ -100,6 +101,31 @@ test('setup upgrades its hooks and unedited instructions, preserving policy and 
   expect(!refused.ok && refused.error.message).toContain(`mv -i '${integration.skill}' '${integration.skill}.undercurrent-previous'`)
   expect(await readFile(integration.skill, 'utf8')).toBe(edited)
   expect(await readFile(integration.hooks, 'utf8')).toBe(before)
+})
+
+test('setup removes retired per-tool hooks in both scopes and hosts, preserving other handlers and policy', async () => {
+  const { project, home, env } = await fixture()
+  for (const global of [true, false]) {
+    const options = { global, hosts: 'both' } as const
+    const installed = unwrap(await setup(home, project, options, env))
+    const policy = await readFile(installed.config, 'utf8')
+    for (const integration of installed.installations) {
+      const raw = JSON.parse(await readFile(integration.hooks, 'utf8')) as { hooks: Record<string, unknown> }
+      const before = structuredClone(raw)
+      const retired = { type: 'command', command: `'/old/package/uc' hook ${integration.provider} # undercurrent:${integration.provider}` }
+      const unrelated = { type: 'command', command: 'echo unrelated', timeout: 17 }
+      const mixed = { matcher: 'Bash', description: 'Keep this group', hooks: [unrelated] }
+      raw.hooks['PostToolUse'] = [{ hooks: [retired] }, { ...mixed, hooks: [retired, unrelated, retired] }]
+      await writeFile(integration.hooks, JSON.stringify(raw))
+      expect((await setup(home, project, options, env)).ok).toBeTrue()
+      expect(JSON.parse(await readFile(integration.hooks, 'utf8')) as unknown).toEqual({ ...before, hooks: { ...before.hooks, PostToolUse: [mixed] } })
+      raw.hooks['PostToolUse'] = [{ hooks: [retired] }]
+      await writeFile(integration.hooks, JSON.stringify(raw))
+      expect((await setup(home, project, options, env)).ok).toBeTrue()
+      expect(JSON.parse(await readFile(integration.hooks, 'utf8')) as unknown).toEqual(before)
+    }
+    expect(await readFile(installed.config, 'utf8')).toBe(policy)
+  }
 })
 
 test('global host detection has no side effects when none exist; native homes can be symlinks but hook files cannot', async () => {
